@@ -12,7 +12,7 @@ import type { ClientMessage, ServerMessage, GameState, Category } from '$lib/typ
 
 // PartyKit host - use localhost in dev, deployed URL in production
 const PARTYKIT_HOST = import.meta.env.DEV
-  ? 'localhost:1999'
+  ? 'localhost:1998'
   : 'brainwave.username.partykit.dev'; // Update this after deploying
 
 let socket: PartySocket | null = null;
@@ -113,8 +113,16 @@ export function markPass() {
   send({ type: 'pass' });
 }
 
-export function nextRound() {
-  send({ type: 'nextRound' });
+export function goToNextWord() {
+  send({ type: 'nextWord' });
+}
+
+export function startNextRound() {
+  send({ type: 'startNextRound' });
+}
+
+export function skipTurn() {
+  send({ type: 'skipTurn' });
 }
 
 export function playAgain() {

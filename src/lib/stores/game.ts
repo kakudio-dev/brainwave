@@ -50,11 +50,20 @@ export const currentGuesser = derived(
   }
 );
 
-export const sortedPlayers = derived(
+export const nextGuesser = derived(
   gameState,
   ($gameState) => {
-    if (!$gameState) return [];
-    return [...$gameState.players].sort((a, b) => b.score - a.score);
+    if (!$gameState) return null;
+    return $gameState.players[$gameState.nextGuesserIndex] ?? null;
+  }
+);
+
+export const isNextGuesser = derived(
+  [gameState, playerId],
+  ([$gameState, $playerId]) => {
+    if (!$gameState || !$playerId) return false;
+    const next = $gameState.players[$gameState.nextGuesserIndex];
+    return next?.id === $playerId;
   }
 );
 

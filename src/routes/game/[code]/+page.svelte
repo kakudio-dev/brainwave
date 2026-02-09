@@ -2,7 +2,7 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { onMount, onDestroy } from 'svelte';
-	import { connect, disconnect, joinGame, markCorrect, markPass, nextRound, playAgain } from '$lib/partykit';
+	import { connect, disconnect, joinGame, markCorrect, markPass, goToNextWord, startNextRound, skipTurn, playAgain } from '$lib/partykit';
 	import {
 		gameState,
 		playerId,
@@ -10,17 +10,12 @@
 		isHost,
 		isGuesser,
 		currentGuesser,
-		sortedPlayers,
-		connectionStatus,
-		roundEndEvent
+		nextGuesser,
+		isNextGuesser,
+		connectionStatus
 	} from '$lib/stores/game';
-	import PlayerList from '$lib/components/PlayerList.svelte';
 	import Timer from '$lib/components/Timer.svelte';
 	import WordDisplay from '$lib/components/WordDisplay.svelte';
-	import SwipeCard from '$lib/components/SwipeCard.svelte';
-
-	let showRoundEnd = $state(false);
-	let roundEndScore = $state(0);
 
 	const roomCode = page.params.code!;
 
@@ -53,15 +48,6 @@
 		}
 	});
 
-	// Watch for round end
-	$effect(() => {
-		if ($roundEndEvent) {
-			roundEndScore = $roundEndEvent.score;
-			showRoundEnd = true;
-			roundEndEvent.set(null);
-		}
-	});
-
 	function handleCorrect() {
 		markCorrect();
 	}
@@ -70,9 +56,12 @@
 		markPass();
 	}
 
-	function handleNextRound() {
-		showRoundEnd = false;
-		nextRound();
+	function handleStartNextRound() {
+		startNextRound();
+	}
+
+	function handleSkipTurn() {
+		skipTurn();
 	}
 
 	function handlePlayAgain() {
@@ -91,50 +80,62 @@
 			<div class="spinner"></div>
 			<p class="mt-md">Loading...</p>
 		</div>
-	{:else if $gameState.status === 'finished'}
-		<!-- Game Over Screen -->
-		<div class="game-over">
-			<h1>Game Over!</h1>
+	{:else if $gameState.showingRoundSummary || $gameState.status === 'finished'}
+		<!-- Round Summary Screen -->
+		<div class="round-summary">
+			<h1>Round {$gameState.roundNumber} Complete!</h1>
+			<p class="text-secondary mt-sm">{$currentGuesser?.name}'s turn is over</p>
 
-			<div class="results mt-xl">
-				<h2>Final Scores</h2>
-				<div class="podium mt-lg">
-					{#each $sortedPlayers.slice(0, 3) as player, i}
-						<div class="podium-place" class:first={i === 0} class:second={i === 1} class:third={i === 2}>
-							<span class="place-number">{i === 0 ? '1st' : i === 1 ? '2nd' : '3rd'}</span>
-							<span class="place-name">{player.name}</span>
-							<span class="place-score">{player.score}</span>
-						</div>
-					{/each}
-				</div>
-
-				{#if $sortedPlayers.length > 3}
-					<div class="other-players mt-lg">
-						<PlayerList
-							players={$sortedPlayers.slice(3)}
-							currentPlayerId={$playerId}
-							showScores={true}
-						/>
-					</div>
+			<div class="word-timeline mt-xl">
+				{#if $gameState.roundWords.length === 0}
+					<p class="text-muted">No words this round</p>
+				{:else}
+					<ul class="timeline-list">
+						{#each $gameState.roundWords as roundWord, i}
+							<li
+								class="timeline-item"
+								class:correct={roundWord.result === 'correct'}
+								class:pass={roundWord.result === 'pass'}
+								class:timeout={roundWord.result === 'timeout'}
+								style="animation-delay: {i * 225}ms"
+							>
+								<span class="word-text">{roundWord.word}</span>
+								<span class="result-icon">
+									{#if roundWord.result === 'correct'}✓{:else if roundWord.result === 'pass'}✗{:else}–{/if}
+								</span>
+							</li>
+						{/each}
+					</ul>
 				{/if}
 			</div>
 
-			{#if $isHost}
-				<div class="actions mt-xl flex flex-col gap-md">
-					<button class="btn btn--primary" onclick={handlePlayAgain}>
-						Play Again
-					</button>
-					<button class="btn btn--secondary" onclick={handleLeave}>
-						Leave Game
-					</button>
-				</div>
-			{:else}
-				<div class="actions mt-xl">
-					<button class="btn btn--secondary" onclick={handleLeave}>
-						Leave Game
-					</button>
-				</div>
-			{/if}
+			<div class="next-up mt-xl">
+				{#if $gameState.roundNumber >= $gameState.totalRounds}
+					<p class="text-lg">That was the last round!</p>
+					<div class="actions mt-lg flex flex-col gap-md">
+						<button class="btn btn--primary" onclick={handlePlayAgain}>
+							Play Again
+						</button>
+						<button class="btn btn--secondary" onclick={handleLeave}>
+							Leave Game
+						</button>
+					</div>
+				{:else}
+					<p class="text-lg">Up next: <strong>{$nextGuesser?.name}</strong></p>
+					{#if $isNextGuesser}
+						<div class="actions mt-lg flex flex-col gap-md">
+							<button class="btn btn--primary btn--large" onclick={handleStartNextRound}>
+								Start My Turn
+							</button>
+							<button class="btn btn--secondary" onclick={handleSkipTurn}>
+								Skip My Turn
+							</button>
+						</div>
+					{:else}
+						<p class="mt-lg text-muted">Waiting for {$nextGuesser?.name} to start...</p>
+					{/if}
+				{/if}
+			</div>
 		</div>
 	{:else}
 		<!-- Playing Screen -->
@@ -143,60 +144,58 @@
 				<span class="category">{$gameState.category}</span>
 				<span class="round">Round {$gameState.roundNumber}/{$gameState.totalRounds}</span>
 			</div>
-			<Timer
-				seconds={$gameState.roundTimeLeft}
-				isLastChance={$gameState.lastChanceMode}
-			/>
+			<Timer seconds={$gameState.roundTimeLeft} />
 		</div>
 
 		<div class="game-content">
-			{#if $isGuesser}
-				<!-- Guesser View -->
-				<SwipeCard onCorrect={handleCorrect} onPass={handlePass}>
+			{#if $gameState.wordRevealed}
+				<!-- Word Revealed - show to everyone -->
+				<div class="revealed-view">
+					<div class="result-badge" class:correct={$gameState.lastWordResult === 'correct'} class:pass={$gameState.lastWordResult === 'pass'}>
+						{$gameState.lastWordResult === 'correct' ? 'Correct!' : 'Passed'}
+					</div>
+					<WordDisplay word={$currentWord} />
+					{#if $isGuesser}
+						<button class="btn btn--primary btn--large mt-xl" onclick={goToNextWord}>
+							Next Word
+						</button>
+					{:else}
+						<p class="mt-xl text-muted">Waiting for {$currentGuesser?.name}...</p>
+					{/if}
+				</div>
+			{:else if $isGuesser}
+				<!-- Guesser View - can only pass -->
+				<div class="guesser-view">
 					<WordDisplay word={null} isGuesser={true} />
-				</SwipeCard>
+				</div>
 			{:else}
-				<!-- Clue Giver View -->
+				<!-- Clue Giver View - can mark correct -->
 				<div class="clue-giver-view">
 					<p class="current-guesser text-secondary mb-md">
 						{$currentGuesser?.name} is guessing
 					</p>
 					<WordDisplay word={$currentWord} />
-					<p class="instruction mt-lg text-muted">
-						Give clues without saying the word!
-					</p>
 				</div>
 			{/if}
 		</div>
 
 		<div class="game-footer">
-			<div class="mini-scores">
-				{#each $gameState.players as player}
-					<div class="mini-score" class:is-guesser={player.id === $currentGuesser?.id}>
-						<span class="name">{player.name.slice(0, 8)}</span>
-						<span class="score">{player.score}</span>
-					</div>
-				{/each}
+			{#if !$gameState.wordRevealed}
+				{#if $isGuesser}
+					<button class="btn btn--secondary" onclick={handlePass}>
+						Pass
+					</button>
+				{:else}
+					<button class="btn btn--success" onclick={handleCorrect}>
+						Correct!
+					</button>
+				{/if}
+			{/if}
+			<div class="current-score">
+				<span class="score-label">{$currentGuesser?.name}'s score</span>
+				<span class="score-value">{$currentGuesser?.score ?? 0}</span>
 			</div>
 		</div>
-
-		<!-- Round End Modal -->
-		{#if showRoundEnd}
-			<div class="modal-overlay">
-				<div class="modal">
-					<h2>Round Complete!</h2>
-					<p class="mt-md">{$currentGuesser?.name} scored {roundEndScore} points</p>
-
-					{#if $isHost}
-						<button class="btn btn--primary mt-xl" onclick={handleNextRound}>
-							{$gameState.roundNumber >= $gameState.totalRounds ? 'See Results' : 'Next Round'}
-						</button>
-					{:else}
-						<p class="mt-xl text-muted">Waiting for host...</p>
-					{/if}
-				</div>
-			</div>
-		{/if}
 	{/if}
 </div>
 
@@ -238,7 +237,9 @@
 		padding: var(--spacing-lg) 0;
 	}
 
-	.clue-giver-view {
+	.clue-giver-view,
+	.guesser-view,
+	.revealed-view {
 		text-align: center;
 	}
 
@@ -246,126 +247,146 @@
 		font-size: var(--text-lg);
 	}
 
-	.instruction {
-		font-size: var(--text-sm);
+	.result-badge {
+		display: inline-block;
+		padding: var(--spacing-sm) var(--spacing-lg);
+		border-radius: var(--radius-full);
+		font-size: var(--text-lg);
+		font-weight: 700;
+		margin-bottom: var(--spacing-lg);
+	}
+
+	.result-badge.correct {
+		background: rgba(34, 197, 94, 0.2);
+		color: var(--color-success);
+	}
+
+	.result-badge.pass {
+		background: rgba(239, 68, 68, 0.2);
+		color: var(--color-danger);
 	}
 
 	.game-footer {
 		padding-top: var(--spacing-md);
 		border-top: 1px solid var(--bg-card);
-	}
-
-	.mini-scores {
 		display: flex;
-		gap: var(--spacing-sm);
-		flex-wrap: wrap;
-		justify-content: center;
+		flex-direction: column;
+		gap: var(--spacing-md);
 	}
 
-	.mini-score {
+	.game-footer .btn {
+		width: 100%;
+	}
+
+	.current-score {
 		display: flex;
 		flex-direction: column;
 		align-items: center;
-		padding: var(--spacing-sm);
-		background: var(--bg-secondary);
-		border-radius: var(--radius-sm);
-		min-width: 4rem;
+		gap: var(--spacing-xs);
 	}
 
-	.mini-score.is-guesser {
-		background: rgba(99, 102, 241, 0.2);
-		border: 1px solid var(--color-primary);
-	}
-
-	.mini-score .name {
-		font-size: var(--text-xs);
+	.score-label {
+		font-size: var(--text-sm);
 		color: var(--text-muted);
 	}
 
-	.mini-score .score {
-		font-size: var(--text-lg);
-		font-weight: 700;
+	.score-value {
+		font-size: var(--text-3xl);
+		font-weight: 800;
+		color: var(--color-primary);
 	}
 
-	/* Game Over Styles */
-	.game-over {
-		text-align: center;
-		padding: var(--spacing-xl) 0;
-	}
-
-	.podium {
-		display: flex;
-		justify-content: center;
-		align-items: flex-end;
-		gap: var(--spacing-sm);
-	}
-
-	.podium-place {
+	/* Round Summary Styles */
+	.round-summary {
+		flex: 1;
 		display: flex;
 		flex-direction: column;
 		align-items: center;
-		padding: var(--spacing-md);
-		background: var(--bg-secondary);
-		border-radius: var(--radius-md);
-		min-width: 5rem;
+		text-align: center;
+		padding: var(--spacing-lg) 0;
+		overflow-y: auto;
 	}
 
-	.podium-place.first {
-		background: linear-gradient(135deg, #ffd700, #ffaa00);
-		color: #000;
-		padding: var(--spacing-lg);
-		transform: scale(1.1);
-	}
-
-	.podium-place.second {
-		background: linear-gradient(135deg, #c0c0c0, #a0a0a0);
-		color: #000;
-	}
-
-	.podium-place.third {
-		background: linear-gradient(135deg, #cd7f32, #a0522d);
-		color: #fff;
-	}
-
-	.place-number {
-		font-size: var(--text-sm);
-		font-weight: 600;
-	}
-
-	.place-name {
-		font-size: var(--text-lg);
-		font-weight: 700;
-		margin: var(--spacing-sm) 0;
-	}
-
-	.place-score {
-		font-size: var(--text-2xl);
-		font-weight: 800;
-	}
-
-	.other-players {
+	.word-timeline {
+		width: 100%;
 		max-width: 20rem;
-		margin: 0 auto;
+		padding: var(--spacing-md) 0;
 	}
 
-	/* Modal */
-	.modal-overlay {
-		position: fixed;
-		inset: 0;
-		background: rgba(0, 0, 0, 0.8);
+	.timeline-list {
+		list-style: none;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: var(--spacing-sm);
+	}
+
+	.timeline-item {
 		display: flex;
 		align-items: center;
-		justify-content: center;
-		z-index: 100;
-		padding: var(--spacing-lg);
+		gap: var(--spacing-sm);
+		padding: var(--spacing-sm) var(--spacing-md);
+		border-radius: var(--radius-md);
+		font-size: var(--text-base);
+		opacity: 0;
+		transform: translateY(10px) scale(0.9);
+		animation: timeline-item-in 0.45s ease-out forwards;
 	}
 
-	.modal {
-		background: var(--bg-secondary);
-		padding: var(--spacing-xl);
-		border-radius: var(--radius-lg);
-		text-align: center;
-		max-width: 20rem;
+	.timeline-item.correct {
+		background: rgba(34, 197, 94, 0.15);
+		border: 1px solid rgba(34, 197, 94, 0.3);
+	}
+
+	.timeline-item.pass {
+		background: rgba(239, 68, 68, 0.15);
+		border: 1px solid rgba(239, 68, 68, 0.3);
+	}
+
+	.timeline-item.timeout {
+		background: rgba(156, 163, 175, 0.15);
+		border: 1px solid rgba(156, 163, 175, 0.3);
+	}
+
+	.word-text {
+		font-weight: 500;
+	}
+
+	.result-icon {
+		font-size: var(--text-sm);
+		font-weight: 700;
+	}
+
+	.timeline-item.correct .result-icon {
+		color: var(--color-success);
+	}
+
+	.timeline-item.pass .result-icon {
+		color: var(--color-danger);
+	}
+
+	.timeline-item.timeout .result-icon {
+		color: var(--text-muted);
+	}
+
+	@keyframes timeline-item-in {
+		to {
+			opacity: 1;
+			transform: translateY(0) scale(1);
+		}
+	}
+
+	.next-up {
+		margin-top: auto;
+		padding-top: var(--spacing-lg);
+	}
+
+	.next-up strong {
+		color: var(--color-primary);
+	}
+
+	.next-up .actions {
 		width: 100%;
+		max-width: 16rem;
 	}
 </style>

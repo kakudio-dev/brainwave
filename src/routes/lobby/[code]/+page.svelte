@@ -13,6 +13,12 @@
 	const roomCode = page.params.code!;
 
 	onMount(async () => {
+		// If already connected (e.g., coming from Play Again), don't reconnect
+		if ($connectionStatus === 'connected') {
+			connecting = false;
+			return;
+		}
+
 		const playerName = sessionStorage.getItem('playerName');
 		if (!playerName) {
 			goto('/join');

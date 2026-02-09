@@ -1,8 +1,7 @@
 import type * as Party from "partykit/server";
 import { getShuffledWords, type Category } from "./words";
 
-const ROUND_DURATION = 60; // seconds
-const LAST_CHANCE_DURATION = 3; // extra seconds after timer ends
+const ROUND_DURATION = 10; // seconds
 
 interface Player {
   id: string;
@@ -11,19 +10,29 @@ interface Player {
   score: number;
 }
 
+interface RoundWord {
+  word: string;
+  result: 'correct' | 'pass' | 'timeout';
+}
+
 interface GameState {
   code: string;
   players: Player[];
   status: 'lobby' | 'playing' | 'finished';
   currentGuesserIndex: number;
   currentWord: string | null;
+  revealedWord: string | null;
   wordsRemaining: string[];
   wordsUsed: string[];
   roundTimeLeft: number;
   category: string;
   roundNumber: number;
   totalRounds: number;
-  lastChanceMode: boolean;
+  wordRevealed: boolean;
+  lastWordResult: 'correct' | 'pass' | null;
+  roundWords: RoundWord[];
+  showingRoundSummary: boolean;
+  nextGuesserIndex: number;
 }
 
 type ClientMessage =
@@ -31,12 +40,15 @@ type ClientMessage =
   | { type: 'start'; category: Category }
   | { type: 'correct' }
   | { type: 'pass' }
-  | { type: 'nextRound' }
+  | { type: 'nextWord' }
+  | { type: 'startNextRound' }
+  | { type: 'skipTurn' }
   | { type: 'playAgain' };
 
 export default class BrainwaveServer implements Party.Server {
   state: GameState;
   timerInterval: ReturnType<typeof setInterval> | null = null;
+  nextGamePlayers: Player[] = []; // Players waiting in lobby for next game
 
   constructor(readonly room: Party.Room) {
     this.state = {
@@ -45,13 +57,18 @@ export default class BrainwaveServer implements Party.Server {
       status: 'lobby',
       currentGuesserIndex: 0,
       currentWord: null,
+      revealedWord: null,
       wordsRemaining: [],
       wordsUsed: [],
       roundTimeLeft: ROUND_DURATION,
       category: '',
       roundNumber: 0,
       totalRounds: 0,
-      lastChanceMode: false
+      wordRevealed: false,
+      lastWordResult: null,
+      roundWords: [],
+      showingRoundSummary: false,
+      nextGuesserIndex: 0
     };
   }
 
@@ -81,8 +98,14 @@ export default class BrainwaveServer implements Party.Server {
         case 'pass':
           this.handlePass(sender);
           break;
-        case 'nextRound':
-          this.handleNextRound(sender);
+        case 'nextWord':
+          this.handleNextWord(sender);
+          break;
+        case 'startNextRound':
+          this.handleStartNextRound(sender);
+          break;
+        case 'skipTurn':
+          this.handleSkipTurn(sender);
           break;
         case 'playAgain':
           this.handlePlayAgain(sender);
@@ -135,10 +158,26 @@ export default class BrainwaveServer implements Party.Server {
     // Remove player
     this.state.players.splice(playerIndex, 1);
 
+    // Also remove from next game lobby if present
+    const nextGameIndex = this.nextGamePlayers.findIndex(p => p.id === conn.id);
+    if (nextGameIndex !== -1) {
+      const wasNextGameHost = this.nextGamePlayers[nextGameIndex].isHost;
+      this.nextGamePlayers.splice(nextGameIndex, 1);
+
+      // Transfer host in next game lobby if needed
+      if (wasNextGameHost && this.nextGamePlayers.length > 0) {
+        this.nextGamePlayers[0].isHost = true;
+      }
+
+      // Broadcast updated lobby to remaining players
+      this.broadcastLobbyToNextGamePlayers();
+    }
+
     // If no players left, reset game
     if (this.state.players.length === 0) {
       this.stopTimer();
       this.state.status = 'lobby';
+      this.nextGamePlayers = []; // Clear next game lobby too
       return;
     }
 
@@ -159,7 +198,11 @@ export default class BrainwaveServer implements Party.Server {
   }
 
   private handleStart(conn: Party.Connection, category: Category) {
-    const player = this.state.players.find(p => p.id === conn.id);
+    // Check if starting from "play again" lobby or regular lobby
+    const isPlayAgainLobby = this.nextGamePlayers.length > 0;
+    const players = isPlayAgainLobby ? this.nextGamePlayers : this.state.players;
+
+    const player = players.find(p => p.id === conn.id);
     if (!player?.isHost) {
       this.sendToConnection(conn, {
         type: 'error',
@@ -168,13 +211,21 @@ export default class BrainwaveServer implements Party.Server {
       return;
     }
 
-    if (this.state.players.length < 2) {
+    if (players.length < 2) {
       this.sendToConnection(conn, {
         type: 'error',
         message: 'Need at least 2 players to start'
       });
       return;
     }
+
+    // If play again, transfer players to main state
+    if (isPlayAgainLobby) {
+      this.state.players = [...this.nextGamePlayers];
+    }
+
+    // Always clear next game lobby when starting
+    this.nextGamePlayers = [];
 
     // Initialize game
     this.state.status = 'playing';
@@ -184,7 +235,6 @@ export default class BrainwaveServer implements Party.Server {
     this.state.currentGuesserIndex = 0;
     this.state.roundNumber = 1;
     this.state.totalRounds = this.state.players.length;
-    this.state.lastChanceMode = false;
 
     // Reset scores
     this.state.players.forEach(p => p.score = 0);
@@ -195,13 +245,22 @@ export default class BrainwaveServer implements Party.Server {
 
   private startRound() {
     this.state.roundTimeLeft = ROUND_DURATION;
-    this.state.lastChanceMode = false;
+    this.state.wordRevealed = false;
+    this.state.lastWordResult = null;
+    this.state.revealedWord = null;
+    this.state.roundWords = [];
+    this.state.showingRoundSummary = false;
     this.nextWord();
     this.startTimer();
     this.broadcastState();
   }
 
   private nextWord() {
+    this.advanceToNextWord();
+    this.broadcastWord();
+  }
+
+  private advanceToNextWord() {
     if (this.state.wordsRemaining.length === 0) {
       // Reshuffle used words if we run out
       this.state.wordsRemaining = [...this.state.wordsUsed];
@@ -215,49 +274,90 @@ export default class BrainwaveServer implements Party.Server {
     }
 
     this.state.currentWord = this.state.wordsRemaining.pop() || null;
-    this.broadcastWord();
   }
 
   private handleCorrect(conn: Party.Connection) {
     const guesser = this.state.players[this.state.currentGuesserIndex];
-    if (!guesser || conn.id !== guesser.id) return;
+    if (!guesser) return;
     if (this.state.status !== 'playing') return;
+    if (this.state.wordRevealed) return;
+    if (this.state.showingRoundSummary) return;
 
-    // Add to used words
-    if (this.state.currentWord) {
-      this.state.wordsUsed.push(this.state.currentWord);
-    }
+    // Only non-guessers can mark correct
+    if (conn.id === guesser.id) return;
 
     // Increment score
     guesser.score++;
 
-    // Next word
-    this.nextWord();
+    // Track word for round summary
+    if (this.state.currentWord) {
+      this.state.roundWords.push({ word: this.state.currentWord, result: 'correct' });
+      this.state.wordsUsed.push(this.state.currentWord);
+    }
+
+    // Store revealed word and advance to next
+    this.state.revealedWord = this.state.currentWord;
+    this.state.wordRevealed = true;
+    this.state.lastWordResult = 'correct';
+
+    this.advanceToNextWord();
+
     this.broadcastState();
+    this.broadcastWordsForReveal();
   }
 
   private handlePass(conn: Party.Connection) {
     const guesser = this.state.players[this.state.currentGuesserIndex];
-    if (!guesser || conn.id !== guesser.id) return;
+    if (!guesser) return;
     if (this.state.status !== 'playing') return;
+    if (this.state.wordRevealed) return;
+    if (this.state.showingRoundSummary) return;
 
-    // Put word back at beginning of remaining (will be used later)
+    // Only guesser can pass
+    if (conn.id !== guesser.id) return;
+
+    // Track word for round summary
     if (this.state.currentWord) {
-      this.state.wordsRemaining.unshift(this.state.currentWord);
+      this.state.roundWords.push({ word: this.state.currentWord, result: 'pass' });
     }
 
-    // Next word
-    this.nextWord();
+    // Store revealed word and advance to next
+    this.state.revealedWord = this.state.currentWord;
+    this.state.wordRevealed = true;
+    this.state.lastWordResult = 'pass';
+
+    this.advanceToNextWord();
+
+    this.broadcastState();
+    this.broadcastWordsForReveal();
+  }
+
+  private handleNextWord(conn: Party.Connection) {
+    const guesser = this.state.players[this.state.currentGuesserIndex];
+    if (!guesser) return;
+    if (this.state.status !== 'playing') return;
+    if (!this.state.wordRevealed) return;
+
+    // Only guesser can go to next word
+    if (conn.id !== guesser.id) return;
+
+    // Clear reveal state - word already advanced
+    this.state.wordRevealed = false;
+    this.state.lastWordResult = null;
+    this.state.revealedWord = null;
     this.broadcastState();
   }
 
-  private handleNextRound(conn: Party.Connection) {
-    const player = this.state.players.find(p => p.id === conn.id);
-    if (!player?.isHost) return;
+  private handleStartNextRound(conn: Party.Connection) {
     if (this.state.status !== 'playing') return;
+    if (!this.state.showingRoundSummary) return;
+
+    // Only the next guesser can start the round
+    const nextGuesser = this.state.players[this.state.nextGuesserIndex];
+    if (!nextGuesser || conn.id !== nextGuesser.id) return;
 
     // Move to next guesser
-    this.state.currentGuesserIndex = (this.state.currentGuesserIndex + 1) % this.state.players.length;
+    this.state.currentGuesserIndex = this.state.nextGuesserIndex;
     this.state.roundNumber++;
 
     // Check if game is over
@@ -270,19 +370,53 @@ export default class BrainwaveServer implements Party.Server {
     this.startRound();
   }
 
-  private handlePlayAgain(conn: Party.Connection) {
-    const player = this.state.players.find(p => p.id === conn.id);
-    if (!player?.isHost) return;
+  private handleSkipTurn(conn: Party.Connection) {
+    if (this.state.status !== 'playing') return;
+    if (!this.state.showingRoundSummary) return;
 
-    // Reset to lobby
-    this.state.status = 'lobby';
-    this.state.currentWord = null;
-    this.state.wordsRemaining = [];
-    this.state.wordsUsed = [];
-    this.state.roundNumber = 0;
-    this.state.players.forEach(p => p.score = 0);
+    // Only the next guesser can skip their turn
+    const nextGuesser = this.state.players[this.state.nextGuesserIndex];
+    if (!nextGuesser || conn.id !== nextGuesser.id) return;
+
+    // Skipping counts as using a round
+    this.state.roundNumber++;
+
+    // Check if all rounds are done (everyone played or skipped)
+    if (this.state.roundNumber >= this.state.totalRounds) {
+      // Game is over - UI will show Play Again/Leave buttons
+      this.broadcastState();
+      return;
+    }
+
+    // Advance to the next player
+    this.state.nextGuesserIndex = (this.state.nextGuesserIndex + 1) % this.state.players.length;
 
     this.broadcastState();
+  }
+
+  private handlePlayAgain(conn: Party.Connection) {
+    const player = this.state.players.find(p => p.id === conn.id);
+    if (!player) return;
+
+    // Check if already in next game lobby
+    if (this.nextGamePlayers.find(p => p.id === conn.id)) return;
+
+    // First player to click becomes host
+    const isFirstPlayer = this.nextGamePlayers.length === 0;
+
+    // Add to next game lobby
+    this.nextGamePlayers.push({
+      id: player.id,
+      name: player.name,
+      isHost: isFirstPlayer,
+      score: 0
+    });
+
+    // Send lobby state to this player
+    this.sendLobbyState(conn);
+
+    // Broadcast updated lobby to all players in nextGamePlayers
+    this.broadcastLobbyToNextGamePlayers();
   }
 
   private startTimer() {
@@ -291,13 +425,7 @@ export default class BrainwaveServer implements Party.Server {
     this.timerInterval = setInterval(() => {
       this.state.roundTimeLeft--;
 
-      if (this.state.roundTimeLeft <= 0 && !this.state.lastChanceMode) {
-        // Enter last chance mode
-        this.state.lastChanceMode = true;
-        this.state.roundTimeLeft = LAST_CHANCE_DURATION;
-        this.broadcastState();
-      } else if (this.state.roundTimeLeft <= 0 && this.state.lastChanceMode) {
-        // Round over
+      if (this.state.roundTimeLeft <= 0) {
         this.endRound();
       } else {
         this.broadcastState();
@@ -315,14 +443,18 @@ export default class BrainwaveServer implements Party.Server {
   private endRound() {
     this.stopTimer();
 
-    const guesser = this.state.players[this.state.currentGuesserIndex];
+    // Add current word as timeout if there was one being shown
+    if (this.state.currentWord && !this.state.wordRevealed) {
+      this.state.roundWords.push({ word: this.state.currentWord, result: 'timeout' });
+    }
 
-    // Broadcast round end
-    this.room.broadcast(JSON.stringify({
-      type: 'roundEnd',
-      guesserId: guesser?.id,
-      score: guesser?.score || 0
-    }));
+    // Calculate who is next
+    this.state.nextGuesserIndex = (this.state.currentGuesserIndex + 1) % this.state.players.length;
+    this.state.showingRoundSummary = true;
+    this.state.wordRevealed = false;
+    this.state.currentWord = null;
+
+    this.broadcastState();
   }
 
   private endGame() {
@@ -352,7 +484,11 @@ export default class BrainwaveServer implements Party.Server {
       category: this.state.category,
       roundNumber: this.state.roundNumber,
       totalRounds: this.state.totalRounds,
-      lastChanceMode: this.state.lastChanceMode
+      wordRevealed: this.state.wordRevealed,
+      lastWordResult: this.state.lastWordResult,
+      roundWords: this.state.roundWords,
+      showingRoundSummary: this.state.showingRoundSummary,
+      nextGuesserIndex: this.state.nextGuesserIndex
     };
   }
 
@@ -381,8 +517,75 @@ export default class BrainwaveServer implements Party.Server {
     }
   }
 
+  private broadcastWordToAll() {
+    // Send word to everyone (when revealed)
+    for (const conn of this.room.getConnections()) {
+      this.sendToConnection(conn, {
+        type: 'word',
+        word: this.state.currentWord || ''
+      });
+    }
+  }
+
+  private broadcastWordsForReveal() {
+    // Send revealed word to guesser, next word to clue givers
+    const guesserId = this.state.players[this.state.currentGuesserIndex]?.id;
+
+    for (const conn of this.room.getConnections()) {
+      if (conn.id === guesserId) {
+        // Guesser sees the revealed word
+        this.sendToConnection(conn, {
+          type: 'word',
+          word: this.state.revealedWord || ''
+        });
+      } else {
+        // Clue givers see the next word
+        this.sendToConnection(conn, {
+          type: 'word',
+          word: this.state.currentWord || ''
+        });
+      }
+    }
+  }
+
   private sendToConnection(conn: Party.Connection, data: unknown) {
     conn.send(JSON.stringify(data));
+  }
+
+  private getLobbyState() {
+    return {
+      code: this.state.code,
+      players: this.nextGamePlayers,
+      status: 'lobby' as const,
+      currentGuesserIndex: 0,
+      currentWord: null,
+      wordsRemaining: 0,
+      roundTimeLeft: 0,
+      category: '',
+      roundNumber: 0,
+      totalRounds: 0,
+      wordRevealed: false,
+      lastWordResult: null,
+      roundWords: [],
+      showingRoundSummary: false,
+      nextGuesserIndex: 0
+    };
+  }
+
+  private sendLobbyState(conn: Party.Connection) {
+    this.sendToConnection(conn, {
+      type: 'state',
+      state: this.getLobbyState(),
+      playerId: conn.id
+    });
+  }
+
+  private broadcastLobbyToNextGamePlayers() {
+    for (const conn of this.room.getConnections()) {
+      if (this.nextGamePlayers.find(p => p.id === conn.id)) {
+        this.sendLobbyState(conn);
+      }
+    }
   }
 }
 

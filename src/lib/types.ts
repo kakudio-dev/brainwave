@@ -7,6 +7,11 @@ export interface Player {
 
 export type GameStatus = 'lobby' | 'playing' | 'finished';
 
+export interface RoundWord {
+  word: string;
+  result: 'correct' | 'pass' | 'timeout';
+}
+
 export interface GameState {
   code: string;
   players: Player[];
@@ -18,7 +23,11 @@ export interface GameState {
   category: string;
   roundNumber: number;
   totalRounds: number;
-  lastChanceMode: boolean;
+  wordRevealed: boolean;
+  lastWordResult: 'correct' | 'pass' | null;
+  roundWords: RoundWord[];
+  showingRoundSummary: boolean;
+  nextGuesserIndex: number;
 }
 
 export type Category = 'movies' | 'animals' | 'famous-people' | 'actions';
@@ -36,7 +45,9 @@ export type ClientMessage =
   | { type: 'start'; category: Category }
   | { type: 'correct' }
   | { type: 'pass' }
-  | { type: 'nextRound' }
+  | { type: 'nextWord' }
+  | { type: 'startNextRound' }
+  | { type: 'skipTurn' }
   | { type: 'playAgain' };
 
 // Server -> Client messages
