@@ -10,10 +10,8 @@ import {
 } from '$lib/stores/game';
 import type { ClientMessage, ServerMessage, GameState, Category } from '$lib/types';
 
-// PartyKit host - use localhost in dev, deployed URL in production
-const PARTYKIT_HOST = import.meta.env.DEV
-  ? 'localhost:1998'
-  : 'brainwave.username.partykit.dev'; // Update this after deploying
+// PartyKit host - override for prod via VITE_PARTYKIT_HOST env var
+const PARTYKIT_HOST = import.meta.env.VITE_PARTYKIT_HOST ?? 'localhost:1998';
 
 let socket: PartySocket | null = null;
 
