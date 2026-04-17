@@ -425,6 +425,25 @@ describe('BrainwaveServer', () => {
 			vi.advanceTimersByTime(11000); // End round 2, game finished
 		});
 
+		it('Game status becomes finished after the final round ends', () => {
+			const state = getLastState(conn1);
+			expect(state?.state.status).toBe('finished');
+			expect(state?.state.showingRoundSummary).toBe(true);
+		});
+
+		it('A disconnected player can rejoin after the game ends', () => {
+			// Simulate the client navigating away and reconnecting with a new conn.id
+			server.onClose(conn1);
+			const reconn = createMockConnection('player1-new');
+			addConnection(room, reconn);
+			server.onConnect(reconn, {} as Party.ConnectionContext);
+			sendMessage(server, reconn, { type: 'join', name: 'Alice' });
+
+			expect(getLastError(reconn)).toBeUndefined();
+			const state = getLastState(reconn);
+			expect(state?.state.players.some(p => p.name === 'Alice')).toBe(true);
+		});
+
 		it('Players can join the play-again lobby after game ends', () => {
 			sendMessage(server, conn1, { type: 'playAgain' });
 

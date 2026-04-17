@@ -382,9 +382,8 @@ export default class BrainwaveServer implements Party.Server {
     this.state.roundNumber++;
 
     // Check if all rounds are done (everyone played or skipped)
-    if (this.state.roundNumber >= this.state.totalRounds) {
-      // Game is over - UI will show Play Again/Leave buttons
-      this.broadcastState();
+    if (this.state.roundNumber > this.state.totalRounds) {
+      this.endGame();
       return;
     }
 
@@ -453,6 +452,12 @@ export default class BrainwaveServer implements Party.Server {
     this.state.showingRoundSummary = true;
     this.state.wordRevealed = false;
     this.state.currentWord = null;
+
+    // If that was the final round, end the game so rematch/rejoin isn't blocked
+    if (this.state.roundNumber >= this.state.totalRounds) {
+      this.endGame();
+      return;
+    }
 
     this.broadcastState();
   }

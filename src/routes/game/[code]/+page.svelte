@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount } from 'svelte';
 	import { connect, disconnect, joinGame, markCorrect, markPass, goToNextWord, startNextRound, skipTurn, playAgain } from '$lib/partykit';
 	import {
 		gameState,
@@ -37,9 +37,8 @@
 		}
 	});
 
-	onDestroy(() => {
-		disconnect();
-	});
+	// Socket teardown is handled explicitly (Leave Game) or by the browser on tab close.
+	// Disconnecting here would break the in-room transition to the rematch lobby.
 
 	// Watch for game state changes
 	$effect(() => {
