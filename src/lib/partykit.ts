@@ -137,8 +137,15 @@ export function joinGame(name: string) {
   send({ type: 'join', name, playerId: getOrCreatePlayerId() });
 }
 
-export function startGame(category: Category) {
-  send({ type: 'start', category });
+export function startGame(
+  category: Category,
+  customDeck?: { words: string[]; deckName: string }
+) {
+  if (customDeck) {
+    send({ type: 'start', category, words: customDeck.words, deckName: customDeck.deckName });
+  } else {
+    send({ type: 'start', category });
+  }
 }
 
 export function markCorrect() {

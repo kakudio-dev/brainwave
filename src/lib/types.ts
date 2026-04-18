@@ -46,7 +46,9 @@ export const CATEGORY_LABELS: Record<Category, string> = {
 // Client -> Server messages
 export type ClientMessage =
   | { type: 'join'; name: string; playerId: string }
-  | { type: 'start'; category: Category }
+  // When `words` is provided, the server uses those and labels the round
+  // with `deckName`. Otherwise it uses the built-in category.
+  | { type: 'start'; category: Category; words?: string[]; deckName?: string }
   | { type: 'correct' }
   | { type: 'pass' }
   | { type: 'nextWord' }

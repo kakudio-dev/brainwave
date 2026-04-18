@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import { authUser } from '$lib/stores/auth';
 </script>
 
 <div class="page page--centered">
@@ -17,6 +18,9 @@
 		<button class="btn btn--secondary btn--large" onclick={() => goto('/join')}>
 			Join Game
 		</button>
+		{#if $authUser && typeof $authUser === 'object'}
+			<a class="btn btn--outline" href="/decks">My decks</a>
+		{/if}
 	</div>
 
 	<div class="spacer"></div>

@@ -3,6 +3,44 @@ import { getShuffledWords, type Category } from "./words";
 
 const ROUND_DURATION = 60; // seconds
 
+// Duplicated from functions/_shared/decks.ts because the PartyKit server
+// and Pages Functions deploy separately and don't share a module graph.
+// Kept in lockstep with those values by hand.
+const MIN_WORDS_PER_DECK = 10;
+const MAX_WORDS_PER_DECK = 1000;
+const MAX_WORD_LENGTH = 30;
+const MAX_DECK_NAME_LENGTH = 60;
+
+/**
+ * Sanitize a client-supplied word list: trim, collapse whitespace, drop
+ * empties and overlong entries, dedupe case-insensitively. Mirrors the
+ * validation in functions/_shared/decks.ts — if that ever diverges, the
+ * server becomes the last line of defense.
+ */
+function sanitizeCustomWords(raw: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const rawWord of raw) {
+    if (typeof rawWord !== 'string') continue;
+    const w = rawWord.replace(/\s+/g, ' ').trim();
+    if (w.length === 0 || w.length > MAX_WORD_LENGTH) continue;
+    const key = w.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(w);
+  }
+  return out;
+}
+
+function shuffle<T>(arr: T[]): T[] {
+  const out = [...arr];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
+
 interface Player {
   id: string;          // stable, client-provided UUID (persists across reconnects)
   name: string;
@@ -41,7 +79,11 @@ interface GameState {
 
 type ClientMessage =
   | { type: 'join'; name: string; playerId: string }
-  | { type: 'start'; category: Category }
+  // Start a game with either a built-in category OR an explicit word list.
+  // When `words` is present (and non-empty) the server uses those and labels
+  // the round with `deckName`. Otherwise it falls back to the built-in
+  // category picker in words.ts.
+  | { type: 'start'; category: Category; words?: string[]; deckName?: string }
   | { type: 'correct' }
   | { type: 'pass' }
   | { type: 'nextWord' }
@@ -95,7 +137,7 @@ export default class BrainwaveServer implements Party.Server {
           this.handleJoin(sender, msg.name, msg.playerId);
           break;
         case 'start':
-          this.handleStart(sender, msg.category);
+          this.handleStart(sender, msg.category, msg.words, msg.deckName);
           break;
         case 'correct':
           this.handleCorrect(sender);
@@ -265,7 +307,12 @@ export default class BrainwaveServer implements Party.Server {
     this.connToPlayer.clear();
   }
 
-  private handleStart(conn: Party.Connection, category: Category) {
+  private handleStart(
+    conn: Party.Connection,
+    category: Category,
+    customWords?: string[],
+    deckName?: string
+  ) {
     // Check if starting from "play again" lobby or regular lobby
     const isPlayAgainLobby = this.nextGamePlayers.length > 0;
     const pool = isPlayAgainLobby ? this.nextGamePlayers : this.state.players;
@@ -289,6 +336,32 @@ export default class BrainwaveServer implements Party.Server {
       return;
     }
 
+    // Pick the word list: explicit custom list wins over the built-in category.
+    let words: string[];
+    let label: string;
+    if (customWords && customWords.length > 0) {
+      const cleaned = sanitizeCustomWords(customWords);
+      if (cleaned.length < MIN_WORDS_PER_DECK) {
+        this.sendToConnection(conn, {
+          type: 'error',
+          message: `Custom deck needs at least ${MIN_WORDS_PER_DECK} usable words (got ${cleaned.length})`
+        });
+        return;
+      }
+      if (cleaned.length > MAX_WORDS_PER_DECK) {
+        this.sendToConnection(conn, {
+          type: 'error',
+          message: `Custom deck exceeds the ${MAX_WORDS_PER_DECK}-word limit`
+        });
+        return;
+      }
+      words = shuffle(cleaned);
+      label = (deckName ?? '').trim().slice(0, MAX_DECK_NAME_LENGTH) || 'Custom';
+    } else {
+      words = getShuffledWords(category);
+      label = category;
+    }
+
     // Promote the connected pool into the active game; drop disconnected stragglers.
     this.state.players = connectedPool.map(p => ({ ...p, score: 0 }));
 
@@ -297,8 +370,8 @@ export default class BrainwaveServer implements Party.Server {
 
     // Initialize game
     this.state.status = 'playing';
-    this.state.category = category;
-    this.state.wordsRemaining = getShuffledWords(category);
+    this.state.category = label;
+    this.state.wordsRemaining = words;
     this.state.wordsUsed = [];
     this.state.currentGuesserIndex = 0;
     this.state.roundNumber = 1;

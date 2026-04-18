@@ -1,58 +1,131 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount } from 'svelte';
 	import { connect, disconnect, joinGame, startGame } from '$lib/partykit';
 	import { gameState, playerId, isHost, connectionStatus, errorMessage } from '$lib/stores/game';
 	import { CATEGORY_LABELS, type Category } from '$lib/types';
 	import PlayerList from '$lib/components/PlayerList.svelte';
+	import { authUser, refreshAuth } from '$lib/stores/auth';
+	import { myDecks, refreshMyDecks, fetchDeck } from '$lib/stores/decks';
+	import { validateDeckForm } from '$lib/deckForm';
 
-	let selectedCategory = $state<Category>('movies');
+	type Mode =
+		| { kind: 'category'; category: Category }
+		| { kind: 'my-deck'; slug: string; name: string; words: string[] }
+		| { kind: 'code' }
+		| { kind: 'paste' };
+
+	let mode = $state<Mode>({ kind: 'category', category: 'movies' });
 	let connecting = $state(true);
 
+	// "From code" state
+	let codeInput = $state('');
+	let codeError = $state<string | null>(null);
+	let codeLoading = $state(false);
+
+	// "Paste custom" state
+	let pasteName = $state('');
+	let pasteText = $state('');
+	let pasteError = $state<string | null>(null);
+
 	const roomCode = page.params.code!;
+	const loggedIn = $derived(!!($authUser && typeof $authUser === 'object'));
 
 	onMount(async () => {
-		// If already connected (e.g., coming from Play Again), don't reconnect
-		if ($connectionStatus === 'connected') {
-			connecting = false;
-			return;
-		}
-
-		const playerName = sessionStorage.getItem('playerName');
-		if (!playerName) {
-			goto('/join');
-			return;
-		}
-
-		try {
-			await connect(roomCode);
-			joinGame(playerName);
-			connecting = false;
-		} catch (e) {
-			console.error('Failed to connect:', e);
+		if ($connectionStatus !== 'connected') {
+			const playerName = sessionStorage.getItem('playerName');
+			if (!playerName) {
+				goto('/join');
+				return;
+			}
+			try {
+				await connect(roomCode);
+				joinGame(playerName);
+				connecting = false;
+			} catch (e) {
+				console.error('Failed to connect:', e);
+				connecting = false;
+			}
+		} else {
 			connecting = false;
 		}
+		await refreshAuth();
+		if (loggedIn) refreshMyDecks();
 	});
 
-	onDestroy(() => {
-		// Don't disconnect if navigating to game
-		// disconnect() will be called if they leave
-	});
-
-	// Watch for game start
 	$effect(() => {
 		if ($gameState?.status === 'playing') {
 			goto(`/game/${roomCode}`);
 		}
 	});
 
-	function handleStart() {
-		startGame(selectedCategory);
+	async function loadFromCode() {
+		codeError = null;
+		const slug = codeInput.trim().toUpperCase();
+		if (!/^[A-Z0-9]{4,16}$/.test(slug)) {
+			codeError = 'Codes are 8 uppercase letters.';
+			return;
+		}
+		codeLoading = true;
+		const result = await fetchDeck(slug);
+		codeLoading = false;
+		if (!result.ok) {
+			codeError = result.status === 404 ? 'No deck with that code.' : result.error;
+			return;
+		}
+		mode = { kind: 'my-deck', slug, name: result.deck.name, words: result.deck.words };
+	}
+
+	function selectMyDeck(slug: string) {
+		const d = $myDecks?.find(x => x.slug === slug);
+		if (!d) return;
+		// Lazily load full words when starting, keep summary for display for now
+		mode = { kind: 'my-deck', slug, name: d.name, words: [] };
+	}
+
+	async function handleStart() {
+		if (mode.kind === 'category') {
+			startGame(mode.category);
+			return;
+		}
+		if (mode.kind === 'code' || mode.kind === 'paste') {
+			pasteError = null;
+			codeError = null;
+			if (mode.kind === 'paste') {
+				const v = validateDeckForm(pasteName, pasteText);
+				if (!v.ok) {
+					pasteError = v.error ?? 'Invalid deck';
+					return;
+				}
+				startGame('movies', { words: v.cleanedWords!, deckName: v.cleanedName! });
+			}
+			return;
+		}
+		if (mode.kind === 'my-deck') {
+			// Refetch to get the latest word list from the server
+			let words = mode.words;
+			if (words.length === 0) {
+				const result = await fetchDeck(mode.slug);
+				if (!result.ok) {
+					codeError = result.error;
+					return;
+				}
+				words = result.deck.words;
+			}
+			startGame('movies', { words, deckName: mode.name });
+		}
 	}
 
 	function copyCode() {
 		navigator.clipboard.writeText(roomCode);
+	}
+
+	function isSelectedCategory(c: Category) {
+		return mode.kind === 'category' && mode.category === c;
+	}
+	function isSelectedMyDeck(slug: string) {
+		return mode.kind === 'my-deck' && mode.slug === slug;
 	}
 </script>
 
@@ -76,43 +149,129 @@
 	{:else if $connectionStatus === 'error' || $errorMessage}
 		<div class="status mt-xl text-danger">
 			<p>{$errorMessage || 'Connection failed'}</p>
-			<button class="btn btn--secondary mt-md" onclick={() => goto('/')}>
-				Go Back
-			</button>
+			<button class="btn btn--secondary mt-md" onclick={() => goto('/')}>Go Back</button>
 		</div>
 	{:else if $gameState}
 		<div class="players-section mt-xl">
 			<h3>Players ({$gameState.players.length})</h3>
-			<PlayerList
-				players={$gameState.players}
-				currentPlayerId={$playerId}
-			/>
+			<PlayerList players={$gameState.players} currentPlayerId={$playerId} />
 		</div>
 
 		{#if $isHost}
 			<div class="host-controls mt-xl">
-				<h3>Category</h3>
-				<div class="category-grid mt-md">
-					{#each Object.entries(CATEGORY_LABELS) as [key, label]}
-						<button
-							class="category-btn"
-							class:selected={selectedCategory === key}
-							onclick={() => selectedCategory = key as Category}
-						>
-							{label}
-						</button>
-					{/each}
+				<h3>Pick a deck</h3>
+
+				<div class="section mt-md">
+					<h4 class="section-title">Featured</h4>
+					<div class="pill-grid">
+						{#each Object.entries(CATEGORY_LABELS) as [key, label]}
+							<button
+								class="pill"
+								class:selected={isSelectedCategory(key as Category)}
+								onclick={() => (mode = { kind: 'category', category: key as Category })}
+							>
+								{label}
+							</button>
+						{/each}
+					</div>
 				</div>
 
+				{#if loggedIn}
+					<div class="section mt-lg">
+						<div class="section-head">
+							<h4 class="section-title">My decks</h4>
+							<a href="/decks" class="text-sm text-link">Manage →</a>
+						</div>
+						{#if $myDecks === null}
+							<p class="text-muted text-sm">Loading…</p>
+						{:else if $myDecks.length === 0}
+							<p class="text-muted text-sm">
+								You don't have any saved decks yet. <a class="text-link" href="/decks/new">Create one</a>.
+							</p>
+						{:else}
+							<div class="pill-grid">
+								{#each $myDecks as d (d.slug)}
+									<button
+										class="pill pill--with-meta"
+										class:selected={isSelectedMyDeck(d.slug)}
+										onclick={() => selectMyDeck(d.slug)}
+									>
+										<span class="pill-main">{d.name}</span>
+										<span class="pill-meta">{d.word_count} words</span>
+									</button>
+								{/each}
+							</div>
+						{/if}
+					</div>
+
+					<div class="section mt-lg">
+						<h4 class="section-title">Have a share code?</h4>
+						{#if mode.kind === 'code'}
+							<div class="code-input-row">
+								<input
+									type="text"
+									class="form-input"
+									placeholder="e.g. GLIMMER7"
+									bind:value={codeInput}
+									maxlength="16"
+									autocapitalize="characters"
+								/>
+								<button class="btn btn--secondary" onclick={loadFromCode} disabled={codeLoading}>
+									{codeLoading ? '…' : 'Load'}
+								</button>
+							</div>
+							{#if codeError}<p class="text-danger text-sm mt-sm">{codeError}</p>{/if}
+						{:else}
+							<button class="pill pill--wide" onclick={() => (mode = { kind: 'code' })}>
+								Enter a share code
+							</button>
+						{/if}
+					</div>
+
+					<div class="section mt-lg">
+						<h4 class="section-title">Paste a custom deck</h4>
+						{#if mode.kind === 'paste'}
+							<input
+								type="text"
+								class="form-input mt-sm"
+								placeholder="Deck name"
+								bind:value={pasteName}
+								maxlength="60"
+							/>
+							<textarea
+								class="form-input mt-sm paste-area"
+								rows="8"
+								placeholder={`One word per line\nor comma-separated`}
+								bind:value={pasteText}
+							></textarea>
+							{#if pasteError}<p class="text-danger text-sm mt-sm">{pasteError}</p>{/if}
+						{:else}
+							<button class="pill pill--wide" onclick={() => (mode = { kind: 'paste' })}>
+								Paste a list
+							</button>
+						{/if}
+					</div>
+				{:else}
+					<p class="text-muted text-sm mt-lg">
+						<a class="text-link" href="/login">Sign in</a> to play with custom decks.
+					</p>
+				{/if}
+
 				<button
-					class="btn btn--primary btn--large mt-xl"
+					class="btn btn--primary btn--large mt-xl start-btn"
 					onclick={handleStart}
 					disabled={$gameState.players.length < 2}
 				>
 					{#if $gameState.players.length < 2}
 						Need 2+ players
+					{:else if mode.kind === 'my-deck'}
+						Start: {mode.name}
+					{:else if mode.kind === 'category'}
+						Start: {CATEGORY_LABELS[mode.category]}
+					{:else if mode.kind === 'code'}
+						Load a deck above
 					{:else}
-						Start Game
+						Start with custom deck
 					{/if}
 				</button>
 			</div>
@@ -151,21 +310,46 @@
 		transform: scale(1.02);
 	}
 
-	.room-code:active {
-		transform: scale(0.98);
-	}
-
 	.players-section h3 {
 		margin-bottom: var(--spacing-md);
 	}
 
-	.category-grid {
+	.section {
+		display: flex;
+		flex-direction: column;
+	}
+
+	.section-title {
+		font-size: var(--text-sm);
+		color: var(--text-muted);
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		margin-bottom: var(--spacing-sm);
+	}
+
+	.section-head {
+		display: flex;
+		justify-content: space-between;
+		align-items: baseline;
+	}
+
+	.text-link {
+		color: var(--color-primary);
+		text-decoration: none;
+	}
+
+	.text-link:hover {
+		text-decoration: underline;
+	}
+
+	.pill-grid {
 		display: grid;
-		grid-template-columns: 1fr 1fr;
+		grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
 		gap: var(--spacing-sm);
 	}
 
-	.category-btn {
+	.pill {
 		padding: var(--spacing-md);
 		background: var(--bg-secondary);
 		border: 2px solid transparent;
@@ -174,15 +358,68 @@
 		font-size: var(--text-base);
 		font-weight: 500;
 		cursor: pointer;
+		text-align: left;
 		transition: all var(--transition-fast);
 	}
 
-	.category-btn:hover {
+	.pill:hover {
 		background: var(--bg-card);
 	}
 
-	.category-btn.selected {
+	.pill.selected {
 		border-color: var(--color-primary);
 		background: rgba(99, 102, 241, 0.2);
+	}
+
+	.pill--with-meta {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+
+	.pill-meta {
+		font-size: var(--text-xs);
+		color: var(--text-muted);
+	}
+
+	.pill--wide {
+		width: 100%;
+		text-align: center;
+		font-weight: 400;
+		color: var(--text-secondary);
+	}
+
+	.code-input-row {
+		display: flex;
+		gap: var(--spacing-sm);
+	}
+
+	.code-input-row .form-input {
+		flex: 1;
+		text-transform: uppercase;
+	}
+
+	.form-input {
+		width: 100%;
+		padding: var(--spacing-md);
+		background: var(--bg-secondary);
+		border: 2px solid transparent;
+		border-radius: var(--radius-md);
+		color: var(--text-primary);
+		font-size: var(--text-base);
+		font-family: inherit;
+	}
+
+	.form-input:focus {
+		outline: none;
+		border-color: var(--color-primary);
+	}
+
+	.paste-area {
+		resize: vertical;
+	}
+
+	.start-btn {
+		width: 100%;
 	}
 </style>
