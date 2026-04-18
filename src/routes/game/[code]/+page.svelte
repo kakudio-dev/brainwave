@@ -143,7 +143,7 @@
 				<span class="category">{$gameState.category}</span>
 				<span class="round">Round {$gameState.roundNumber}/{$gameState.totalRounds}</span>
 			</div>
-			<Timer seconds={$gameState.roundTimeLeft} />
+			<Timer endsAt={$gameState.roundEndsAt} />
 		</div>
 
 		<div class="game-content">

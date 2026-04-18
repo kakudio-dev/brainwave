@@ -20,7 +20,10 @@ export interface GameState {
   currentGuesserIndex: number;
   currentWord: string | null;
   wordsRemaining: number;
-  roundTimeLeft: number;
+  // Wall-clock timestamp (ms, server epoch) when the current round ends, or
+  // null when no round is active. Clients interpolate the countdown locally
+  // from this so the server doesn't have to tick once a second.
+  roundEndsAt: number | null;
   category: string;
   roundNumber: number;
   totalRounds: number;

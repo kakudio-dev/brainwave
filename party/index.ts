@@ -25,7 +25,10 @@ interface GameState {
   revealedWord: string | null;
   wordsRemaining: string[];
   wordsUsed: string[];
-  roundTimeLeft: number;
+  // Wall-clock timestamp (ms) when the current round ends. null when no round
+  // is active. The DO sets a Durable Object alarm to this time and hibernates
+  // in between; clients compute their countdown locally from the timestamp.
+  roundEndsAt: number | null;
   category: string;
   roundNumber: number;
   totalRounds: number;
@@ -48,7 +51,6 @@ type ClientMessage =
 
 export default class BrainwaveServer implements Party.Server {
   state: GameState;
-  timerInterval: ReturnType<typeof setInterval> | null = null;
   nextGamePlayers: Player[] = []; // Players waiting in lobby for next game
   // conn.id -> player.id (stable UUID). Populated on join, cleared on disconnect.
   connToPlayer = new Map<string, string>();
@@ -63,7 +65,7 @@ export default class BrainwaveServer implements Party.Server {
       revealedWord: null,
       wordsRemaining: [],
       wordsUsed: [],
-      roundTimeLeft: ROUND_DURATION,
+      roundEndsAt: null,
       category: '',
       roundNumber: 0,
       totalRounds: 0,
@@ -121,6 +123,14 @@ export default class BrainwaveServer implements Party.Server {
 
   onClose(conn: Party.Connection) {
     this.handleDisconnect(conn);
+  }
+
+  async onAlarm() {
+    // Durable Object wakes us up at the round deadline. End the round if we
+    // haven't already done so some other way (explicit skip, all words used).
+    if (this.state.status === 'playing' && !this.state.showingRoundSummary) {
+      this.endRound();
+    }
   }
 
   private playerFor(conn: Party.Connection): Player | undefined {
@@ -250,6 +260,7 @@ export default class BrainwaveServer implements Party.Server {
     this.state.currentWord = null;
     this.state.revealedWord = null;
     this.state.roundWords = [];
+    this.state.roundEndsAt = null;
     this.nextGamePlayers = [];
     this.connToPlayer.clear();
   }
@@ -298,7 +309,7 @@ export default class BrainwaveServer implements Party.Server {
   }
 
   private startRound() {
-    this.state.roundTimeLeft = ROUND_DURATION;
+    this.state.roundEndsAt = Date.now() + ROUND_DURATION * 1000;
     this.state.wordRevealed = false;
     this.state.lastWordResult = null;
     this.state.revealedWord = null;
@@ -484,24 +495,16 @@ export default class BrainwaveServer implements Party.Server {
   }
 
   private startTimer() {
-    this.stopTimer();
-
-    this.timerInterval = setInterval(() => {
-      this.state.roundTimeLeft--;
-
-      if (this.state.roundTimeLeft <= 0) {
-        this.endRound();
-      } else {
-        this.broadcastState();
-      }
-    }, 1000);
+    // roundEndsAt was set by startRound(); arm a Durable Object alarm for it.
+    // The DO can hibernate until the alarm fires instead of ticking each second.
+    if (this.state.roundEndsAt !== null) {
+      // Fire-and-forget; the storage API is async but we don't need to await.
+      void this.room.storage.setAlarm(this.state.roundEndsAt);
+    }
   }
 
   private stopTimer() {
-    if (this.timerInterval) {
-      clearInterval(this.timerInterval);
-      this.timerInterval = null;
-    }
+    void this.room.storage.deleteAlarm();
   }
 
   private endRound() {
@@ -517,6 +520,7 @@ export default class BrainwaveServer implements Party.Server {
     this.state.showingRoundSummary = true;
     this.state.wordRevealed = false;
     this.state.currentWord = null;
+    this.state.roundEndsAt = null;
 
     // If that was the final round, end the game so rematch/rejoin isn't blocked
     if (this.state.roundNumber >= this.state.totalRounds) {
@@ -531,6 +535,7 @@ export default class BrainwaveServer implements Party.Server {
     this.stopTimer();
     this.state.status = 'finished';
     this.state.currentWord = null;
+    this.state.roundEndsAt = null;
 
     // Broadcast game end with final scores
     this.room.broadcast(JSON.stringify({
@@ -550,7 +555,7 @@ export default class BrainwaveServer implements Party.Server {
       currentGuesserIndex: this.state.currentGuesserIndex,
       currentWord: null, // Never send word in state
       wordsRemaining: this.state.wordsRemaining.length,
-      roundTimeLeft: this.state.roundTimeLeft,
+      roundEndsAt: this.state.roundEndsAt,
       category: this.state.category,
       roundNumber: this.state.roundNumber,
       totalRounds: this.state.totalRounds,
@@ -622,7 +627,7 @@ export default class BrainwaveServer implements Party.Server {
       currentGuesserIndex: 0,
       currentWord: null,
       wordsRemaining: 0,
-      roundTimeLeft: 0,
+      roundEndsAt: null,
       category: '',
       roundNumber: 0,
       totalRounds: 0,

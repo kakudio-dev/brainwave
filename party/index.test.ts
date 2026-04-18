@@ -26,19 +26,34 @@ function createMockConnection(id: string): MockConnection & Party.Connection {
 	return conn as MockConnection & Party.Connection;
 }
 
+interface MockStorage {
+	alarm: number | null;
+	setAlarm: (t: number) => Promise<void>;
+	getAlarm: () => Promise<number | null>;
+	deleteAlarm: () => Promise<void>;
+}
+
 interface MockRoom {
 	id: string;
 	connections: Map<string, MockConnection & Party.Connection>;
 	broadcasts: unknown[];
+	storage: MockStorage;
 	getConnections: () => IterableIterator<Party.Connection>;
 	broadcast: (data: string) => void;
 }
 
 function createMockRoom(id = 'TEST'): MockRoom & Party.Room {
+	const storage: MockStorage = {
+		alarm: null,
+		async setAlarm(t: number) { this.alarm = t; },
+		async getAlarm() { return this.alarm; },
+		async deleteAlarm() { this.alarm = null; }
+	};
 	const room: MockRoom = {
 		id,
 		connections: new Map(),
 		broadcasts: [],
+		storage,
 		getConnections() {
 			return this.connections.values();
 		},
@@ -50,6 +65,13 @@ function createMockRoom(id = 'TEST'): MockRoom & Party.Room {
 		}
 	};
 	return room as MockRoom & Party.Room;
+}
+
+// Fire the room's alarm on the server, simulating the Durable Object waking
+// up at the scheduled deadline.
+async function fireAlarm(room: MockRoom, server: BrainwaveServer) {
+	room.storage.alarm = null;
+	await server.onAlarm();
 }
 
 // --- Test Helpers ---
@@ -382,15 +404,14 @@ describe('BrainwaveServer', () => {
 			sendMessage(server, conn1, { type: 'start', category: 'movies' });
 		});
 
-		it('Round ends when timer reaches zero', () => {
-			// Advance time past round duration (10 seconds)
-			vi.advanceTimersByTime(61000);
+		it('Round ends when alarm fires at the round deadline', async () => {
+			await fireAlarm(room, server);
 
 			const state = getLastState(conn1);
 			expect(state?.state.showingRoundSummary).toBe(true);
 		});
 
-		it('Round summary shows all words with results', () => {
+		it('Round summary shows all words with results', async () => {
 			// Get a correct word
 			sendMessage(server, conn2, { type: 'correct' });
 			sendMessage(server, conn1, { type: 'nextWord' });
@@ -399,8 +420,8 @@ describe('BrainwaveServer', () => {
 			sendMessage(server, conn1, { type: 'pass' });
 			sendMessage(server, conn1, { type: 'nextWord' });
 
-			// Let timer run out (timeout on current word)
-			vi.advanceTimersByTime(61000);
+			// Simulate round deadline hitting (timeout on current word)
+			await fireAlarm(room, server);
 
 			const state = getLastState(conn1);
 			expect(state?.state.roundWords.length).toBeGreaterThanOrEqual(2);
@@ -408,9 +429,8 @@ describe('BrainwaveServer', () => {
 			expect(state?.state.roundWords[1].result).toBe('pass');
 		});
 
-		it('Next guesser can start their turn from summary', () => {
-			// End round
-			vi.advanceTimersByTime(61000);
+		it('Next guesser can start their turn from summary', async () => {
+			await fireAlarm(room, server);
 
 			const stateBefore = getLastState(conn1);
 			expect(stateBefore?.state.showingRoundSummary).toBe(true);
@@ -425,9 +445,8 @@ describe('BrainwaveServer', () => {
 			expect(stateAfter?.state.roundNumber).toBe(2);
 		});
 
-		it('Next guesser can skip their turn', () => {
-			// End round
-			vi.advanceTimersByTime(61000);
+		it('Next guesser can skip their turn', async () => {
+			await fireAlarm(room, server);
 
 			const stateBefore = getLastState(conn1);
 			expect(stateBefore?.state.roundNumber).toBe(1);
@@ -438,13 +457,20 @@ describe('BrainwaveServer', () => {
 			const stateAfter = getLastState(conn1);
 			expect(stateAfter?.state.roundNumber).toBe(2);
 		});
+
+		it('Starting a round sets a Durable Object alarm at the deadline', () => {
+			const stateBefore = getLastState(conn1);
+			const endsAt = stateBefore?.state.roundEndsAt;
+			expect(endsAt).toBeTypeOf('number');
+			expect(room.storage.alarm).toBe(endsAt);
+		});
 	});
 
 	describe('Play Again Flow', () => {
 		let conn1: MockConnection & Party.Connection;
 		let conn2: MockConnection & Party.Connection;
 
-		beforeEach(() => {
+		beforeEach(async () => {
 			conn1 = createMockConnection('player1');
 			conn2 = createMockConnection('player2');
 			addConnection(room, conn1);
@@ -456,10 +482,10 @@ describe('BrainwaveServer', () => {
 			joinAs(server, conn2, 'Bob');
 			sendMessage(server, conn1, { type: 'start', category: 'movies' });
 
-			// End all rounds to finish the game
-			vi.advanceTimersByTime(61000); // End round 1 (60s round)
-			sendMessage(server, conn2, { type: 'startNextRound' }); // Start round 2
-			vi.advanceTimersByTime(61000); // End round 2 (60s round), game finished
+			// Fire alarm for round 1, start round 2, then fire alarm for round 2 to finish game.
+			await fireAlarm(room, server);
+			sendMessage(server, conn2, { type: 'startNextRound' });
+			await fireAlarm(room, server);
 		});
 
 		it('Game status becomes finished after the final round ends', () => {
