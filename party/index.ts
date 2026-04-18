@@ -1,7 +1,7 @@
 import type * as Party from "partykit/server";
 import { getShuffledWords, type Category } from "./words";
 
-const ROUND_DURATION = 10; // seconds
+const ROUND_DURATION = 60; // seconds
 
 interface Player {
   id: string;

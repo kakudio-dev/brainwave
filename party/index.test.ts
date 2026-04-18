@@ -347,7 +347,7 @@ describe('BrainwaveServer', () => {
 
 		it('Round ends when timer reaches zero', () => {
 			// Advance time past round duration (10 seconds)
-			vi.advanceTimersByTime(11000);
+			vi.advanceTimersByTime(61000);
 
 			const state = getLastState(conn1);
 			expect(state?.state.showingRoundSummary).toBe(true);
@@ -363,7 +363,7 @@ describe('BrainwaveServer', () => {
 			sendMessage(server, conn1, { type: 'nextWord' });
 
 			// Let timer run out (timeout on current word)
-			vi.advanceTimersByTime(11000);
+			vi.advanceTimersByTime(61000);
 
 			const state = getLastState(conn1);
 			expect(state?.state.roundWords.length).toBeGreaterThanOrEqual(2);
@@ -373,7 +373,7 @@ describe('BrainwaveServer', () => {
 
 		it('Next guesser can start their turn from summary', () => {
 			// End round
-			vi.advanceTimersByTime(11000);
+			vi.advanceTimersByTime(61000);
 
 			const stateBefore = getLastState(conn1);
 			expect(stateBefore?.state.showingRoundSummary).toBe(true);
@@ -390,7 +390,7 @@ describe('BrainwaveServer', () => {
 
 		it('Next guesser can skip their turn', () => {
 			// End round
-			vi.advanceTimersByTime(11000);
+			vi.advanceTimersByTime(61000);
 
 			const stateBefore = getLastState(conn1);
 			expect(stateBefore?.state.roundNumber).toBe(1);
@@ -420,9 +420,9 @@ describe('BrainwaveServer', () => {
 			sendMessage(server, conn1, { type: 'start', category: 'movies' });
 
 			// End all rounds to finish the game
-			vi.advanceTimersByTime(11000); // End round 1
+			vi.advanceTimersByTime(61000); // End round 1 (60s round)
 			sendMessage(server, conn2, { type: 'startNextRound' }); // Start round 2
-			vi.advanceTimersByTime(11000); // End round 2, game finished
+			vi.advanceTimersByTime(61000); // End round 2 (60s round), game finished
 		});
 
 		it('Game status becomes finished after the final round ends', () => {
