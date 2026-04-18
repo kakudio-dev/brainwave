@@ -14,7 +14,15 @@
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"deploy:party": "partykit deploy",
 		"test": "vitest run",
-		"test:watch": "vitest"
+		"test:watch": "vitest",
+		"cf:login": "wrangler login",
+		"cf:whoami": "wrangler whoami",
+		"db:create": "wrangler d1 create brainwave",
+		"db:migrate": "wrangler d1 migrations apply brainwave --remote",
+		"db:migrate:local": "wrangler d1 migrations apply brainwave --local",
+		"db:console": "wrangler d1 execute brainwave --remote --command",
+		"secret:resend": "wrangler pages secret put RESEND_API_KEY --project-name=brainwave-99f",
+		"secret:resend-from": "wrangler pages secret put RESEND_FROM --project-name=brainwave-99f"
 	},
 	"devDependencies": {
 		"@cloudflare/workers-types": "^4.20260418.1",
