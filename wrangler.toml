@@ -13,5 +13,5 @@ pages_build_output_dir = "build"
 [[d1_databases]]
 binding = "DB"
 database_name = "brainwave"
-database_id = "LOCAL-REPLACE-WITH-REAL-ID"
+database_id = "52d7a680-c880-4e2f-ba3d-4b49b6ad0d6f"
 migrations_dir = "migrations"
