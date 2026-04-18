@@ -1,0 +1,17 @@
+# Wrangler config for Cloudflare Pages Functions.
+# This is only used locally (`wrangler pages dev build`) for development
+# and for specifying bindings that Cloudflare should provide at runtime.
+# Deployed bindings are set in the Pages dashboard and override these.
+
+name = "brainwave"
+compatibility_date = "2026-04-18"
+pages_build_output_dir = "build"
+
+# D1 binding. The production binding is configured in the Pages dashboard
+# and overrides this. The database_id below is a placeholder; replace with
+# your actual database id if you want to bind against the real DB locally.
+[[d1_databases]]
+binding = "DB"
+database_name = "brainwave"
+database_id = "LOCAL-REPLACE-WITH-REAL-ID"
+migrations_dir = "migrations"
