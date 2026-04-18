@@ -75,6 +75,11 @@ function sendMessage(server: BrainwaveServer, conn: Party.Connection, msg: unkno
 	server.onMessage(JSON.stringify(msg), conn);
 }
 
+// Convenience: in tests, a player's stable playerId defaults to their conn.id.
+function joinAs(server: BrainwaveServer, conn: Party.Connection, name: string, playerId = conn.id) {
+	sendMessage(server, conn, { type: 'join', name, playerId });
+}
+
 function addConnection(room: MockRoom, conn: MockConnection & Party.Connection) {
 	room.connections.set(conn.id, conn);
 }
@@ -97,7 +102,7 @@ describe('BrainwaveServer', () => {
 			addConnection(room, conn);
 			server.onConnect(conn, {} as Party.ConnectionContext);
 
-			sendMessage(server, conn, { type: 'join', name: 'Alice' });
+			joinAs(server, conn, 'Alice');
 
 			const state = getLastState(conn);
 			expect(state?.state.players).toHaveLength(1);
@@ -114,15 +119,15 @@ describe('BrainwaveServer', () => {
 			server.onConnect(conn1, {} as Party.ConnectionContext);
 			server.onConnect(conn2, {} as Party.ConnectionContext);
 
-			sendMessage(server, conn1, { type: 'join', name: 'Alice' });
-			sendMessage(server, conn2, { type: 'join', name: 'Bob' });
+			joinAs(server, conn1, 'Alice');
+			joinAs(server, conn2, 'Bob');
 			sendMessage(server, conn1, { type: 'start', category: 'movies' });
 
 			// New player tries to join
 			const conn3 = createMockConnection('player3');
 			addConnection(room, conn3);
 			server.onConnect(conn3, {} as Party.ConnectionContext);
-			sendMessage(server, conn3, { type: 'join', name: 'Charlie' });
+			joinAs(server, conn3, 'Charlie');
 
 			const error = getLastError(conn3);
 			expect(error).toBe('Game already in progress');
@@ -136,8 +141,8 @@ describe('BrainwaveServer', () => {
 			server.onConnect(conn1, {} as Party.ConnectionContext);
 			server.onConnect(conn2, {} as Party.ConnectionContext);
 
-			sendMessage(server, conn1, { type: 'join', name: 'Alice' });
-			sendMessage(server, conn2, { type: 'join', name: 'Bob' });
+			joinAs(server, conn1, 'Alice');
+			joinAs(server, conn2, 'Bob');
 
 			const state = getLastState(conn1);
 			expect(state?.state.players[0].isHost).toBe(true);
@@ -152,8 +157,8 @@ describe('BrainwaveServer', () => {
 			server.onConnect(conn1, {} as Party.ConnectionContext);
 			server.onConnect(conn2, {} as Party.ConnectionContext);
 
-			sendMessage(server, conn1, { type: 'join', name: 'Alice' });
-			sendMessage(server, conn2, { type: 'join', name: 'Bob' });
+			joinAs(server, conn1, 'Alice');
+			joinAs(server, conn2, 'Bob');
 
 			// Host leaves
 			room.connections.delete('player1');
@@ -176,18 +181,50 @@ describe('BrainwaveServer', () => {
 			server.onConnect(conn2, {} as Party.ConnectionContext);
 			server.onConnect(conn3, {} as Party.ConnectionContext);
 
-			sendMessage(server, conn1, { type: 'join', name: 'Alice' });
-			sendMessage(server, conn2, { type: 'join', name: 'Bob' });
-			sendMessage(server, conn3, { type: 'join', name: 'Charlie' });
+			joinAs(server, conn1, 'Alice');
+			joinAs(server, conn2, 'Bob');
+			joinAs(server, conn3, 'Charlie');
 			sendMessage(server, conn1, { type: 'start', category: 'movies' });
 
-			// Non-guesser leaves
+			// Non-guesser disconnects (keeps slot so they can reconnect)
 			room.connections.delete('player3');
 			server.onClose(conn3);
 
 			const state = getLastState(conn1);
 			expect(state?.state.status).toBe('playing');
+			expect(state?.state.players).toHaveLength(3);
+			const charlie = state?.state.players.find(p => p.name === 'Charlie');
+			expect(charlie?.connected).toBe(false);
+		});
+
+		it('A disconnected player can refresh and resume mid-game without losing their turn', () => {
+			const conn1 = createMockConnection('player1');
+			const conn2 = createMockConnection('player2');
+			addConnection(room, conn1);
+			addConnection(room, conn2);
+			server.onConnect(conn1, {} as Party.ConnectionContext);
+			server.onConnect(conn2, {} as Party.ConnectionContext);
+			joinAs(server, conn1, 'Alice');
+			joinAs(server, conn2, 'Bob');
+			sendMessage(server, conn1, { type: 'start', category: 'movies' });
+
+			// Alice (the current guesser, index 0) refreshes her browser
+			room.connections.delete('player1');
+			server.onClose(conn1);
+			const reconn = createMockConnection('player1-new');
+			addConnection(room, reconn);
+			server.onConnect(reconn, {} as Party.ConnectionContext);
+			joinAs(server, reconn, 'Alice', 'player1'); // same playerId from localStorage
+
+			expect(getLastError(reconn)).toBeUndefined();
+			const state = getLastState(reconn);
+			expect(state?.state.status).toBe('playing');
 			expect(state?.state.players).toHaveLength(2);
+			// Turn order preserved: Alice still at index 0 and is still the guesser.
+			expect(state?.state.currentGuesserIndex).toBe(0);
+			const alice = state?.state.players[0];
+			expect(alice?.name).toBe('Alice');
+			expect(alice?.connected).toBe(true);
 		});
 	});
 
@@ -200,8 +237,8 @@ describe('BrainwaveServer', () => {
 			server.onConnect(conn1, {} as Party.ConnectionContext);
 			server.onConnect(conn2, {} as Party.ConnectionContext);
 
-			sendMessage(server, conn1, { type: 'join', name: 'Alice' });
-			sendMessage(server, conn2, { type: 'join', name: 'Bob' });
+			joinAs(server, conn1, 'Alice');
+			joinAs(server, conn2, 'Bob');
 
 			// Non-host tries to start
 			sendMessage(server, conn2, { type: 'start', category: 'movies' });
@@ -215,11 +252,11 @@ describe('BrainwaveServer', () => {
 			addConnection(room, conn1);
 			server.onConnect(conn1, {} as Party.ConnectionContext);
 
-			sendMessage(server, conn1, { type: 'join', name: 'Alice' });
+			joinAs(server, conn1, 'Alice');
 			sendMessage(server, conn1, { type: 'start', category: 'movies' });
 
 			const error = getLastError(conn1);
-			expect(error).toBe('Need at least 2 players to start');
+			expect(error).toBe('Need at least 2 connected players to start');
 		});
 
 		it('Starting a game initializes rounds equal to player count', () => {
@@ -233,9 +270,9 @@ describe('BrainwaveServer', () => {
 			server.onConnect(conn2, {} as Party.ConnectionContext);
 			server.onConnect(conn3, {} as Party.ConnectionContext);
 
-			sendMessage(server, conn1, { type: 'join', name: 'Alice' });
-			sendMessage(server, conn2, { type: 'join', name: 'Bob' });
-			sendMessage(server, conn3, { type: 'join', name: 'Charlie' });
+			joinAs(server, conn1, 'Alice');
+			joinAs(server, conn2, 'Bob');
+			joinAs(server, conn3, 'Charlie');
 			sendMessage(server, conn1, { type: 'start', category: 'movies' });
 
 			const state = getLastState(conn1);
@@ -256,8 +293,8 @@ describe('BrainwaveServer', () => {
 			server.onConnect(conn1, {} as Party.ConnectionContext);
 			server.onConnect(conn2, {} as Party.ConnectionContext);
 
-			sendMessage(server, conn1, { type: 'join', name: 'Alice' });
-			sendMessage(server, conn2, { type: 'join', name: 'Bob' });
+			joinAs(server, conn1, 'Alice');
+			joinAs(server, conn2, 'Bob');
 			sendMessage(server, conn1, { type: 'start', category: 'movies' });
 		});
 
@@ -340,8 +377,8 @@ describe('BrainwaveServer', () => {
 			server.onConnect(conn1, {} as Party.ConnectionContext);
 			server.onConnect(conn2, {} as Party.ConnectionContext);
 
-			sendMessage(server, conn1, { type: 'join', name: 'Alice' });
-			sendMessage(server, conn2, { type: 'join', name: 'Bob' });
+			joinAs(server, conn1, 'Alice');
+			joinAs(server, conn2, 'Bob');
 			sendMessage(server, conn1, { type: 'start', category: 'movies' });
 		});
 
@@ -415,8 +452,8 @@ describe('BrainwaveServer', () => {
 			server.onConnect(conn1, {} as Party.ConnectionContext);
 			server.onConnect(conn2, {} as Party.ConnectionContext);
 
-			sendMessage(server, conn1, { type: 'join', name: 'Alice' });
-			sendMessage(server, conn2, { type: 'join', name: 'Bob' });
+			joinAs(server, conn1, 'Alice');
+			joinAs(server, conn2, 'Bob');
 			sendMessage(server, conn1, { type: 'start', category: 'movies' });
 
 			// End all rounds to finish the game
@@ -433,15 +470,19 @@ describe('BrainwaveServer', () => {
 
 		it('A disconnected player can rejoin after the game ends', () => {
 			// Simulate the client navigating away and reconnecting with a new conn.id
+			// but the same persistent playerId (from localStorage).
 			server.onClose(conn1);
 			const reconn = createMockConnection('player1-new');
 			addConnection(room, reconn);
 			server.onConnect(reconn, {} as Party.ConnectionContext);
-			sendMessage(server, reconn, { type: 'join', name: 'Alice' });
+			// Reuse Alice's original playerId
+			joinAs(server, reconn, 'Alice', 'player1');
 
 			expect(getLastError(reconn)).toBeUndefined();
 			const state = getLastState(reconn);
-			expect(state?.state.players.some(p => p.name === 'Alice')).toBe(true);
+			const alices = state?.state.players.filter(p => p.name === 'Alice') ?? [];
+			expect(alices).toHaveLength(1);
+			expect(alices[0].connected).toBe(true);
 		});
 
 		it('Players can join the play-again lobby after game ends', () => {

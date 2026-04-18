@@ -13,7 +13,23 @@ import type { ClientMessage, ServerMessage, GameState, Category } from '$lib/typ
 // PartyKit host - override for prod via VITE_PARTYKIT_HOST env var
 const PARTYKIT_HOST = import.meta.env.VITE_PARTYKIT_HOST ?? 'localhost:1998';
 
+const PLAYER_ID_KEY = 'brainwave-player-id';
+
 let socket: PartySocket | null = null;
+// Remember the most recent join so we can re-send it on auto-reconnect.
+let pendingJoin: { name: string } | null = null;
+
+function getOrCreatePlayerId(): string {
+  if (typeof localStorage === 'undefined') {
+    return crypto.randomUUID();
+  }
+  let id = localStorage.getItem(PLAYER_ID_KEY);
+  if (!id) {
+    id = crypto.randomUUID();
+    localStorage.setItem(PLAYER_ID_KEY, id);
+  }
+  return id;
+}
 
 export function connect(roomCode: string): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -29,9 +45,24 @@ export function connect(roomCode: string): Promise<void> {
       room: roomCode.toLowerCase()
     });
 
+    let resolved = false;
+
+    // 'open' fires on initial connect AND on every auto-reconnect. On reconnect
+    // we must re-send our join message so the server re-binds this connection
+    // to our stable playerId.
     socket.addEventListener('open', () => {
       connectionStatus.set('connected');
-      resolve();
+      if (pendingJoin) {
+        socket!.send(JSON.stringify({
+          type: 'join',
+          name: pendingJoin.name,
+          playerId: getOrCreatePlayerId()
+        } satisfies ClientMessage));
+      }
+      if (!resolved) {
+        resolved = true;
+        resolve();
+      }
     });
 
     socket.addEventListener('message', (event) => {
@@ -44,18 +75,23 @@ export function connect(roomCode: string): Promise<void> {
     });
 
     socket.addEventListener('close', () => {
-      connectionStatus.set('disconnected');
+      // PartySocket auto-reconnects; surface the gap as 'connecting'.
+      connectionStatus.set('connecting');
     });
 
     socket.addEventListener('error', () => {
       connectionStatus.set('error');
       errorMessage.set('Connection failed');
-      reject(new Error('Connection failed'));
+      if (!resolved) {
+        resolved = true;
+        reject(new Error('Connection failed'));
+      }
     });
   });
 }
 
 export function disconnect() {
+  pendingJoin = null;
   if (socket) {
     socket.close();
     socket = null;
@@ -67,7 +103,7 @@ function handleMessage(msg: ServerMessage) {
   switch (msg.type) {
     case 'state':
       gameState.set(msg.state as GameState);
-      playerId.set(msg.playerId);
+      if (msg.playerId) playerId.set(msg.playerId);
       break;
 
     case 'word':
@@ -96,7 +132,9 @@ function send(msg: ClientMessage) {
 
 // Game actions
 export function joinGame(name: string) {
-  send({ type: 'join', name });
+  // Remember so auto-reconnects re-send it.
+  pendingJoin = { name };
+  send({ type: 'join', name, playerId: getOrCreatePlayerId() });
 }
 
 export function startGame(category: Category) {

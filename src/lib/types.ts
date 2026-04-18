@@ -3,6 +3,7 @@ export interface Player {
   name: string;
   isHost: boolean;
   score: number;
+  connected: boolean;
 }
 
 export type GameStatus = 'lobby' | 'playing' | 'finished';
@@ -41,7 +42,7 @@ export const CATEGORY_LABELS: Record<Category, string> = {
 
 // Client -> Server messages
 export type ClientMessage =
-  | { type: 'join'; name: string }
+  | { type: 'join'; name: string; playerId: string }
   | { type: 'start'; category: Category }
   | { type: 'correct' }
   | { type: 'pass' }
@@ -52,7 +53,7 @@ export type ClientMessage =
 
 // Server -> Client messages
 export type ServerMessage =
-  | { type: 'state'; state: GameState; playerId: string }
+  | { type: 'state'; state: GameState; playerId: string | null }
   | { type: 'word'; word: string }
   | { type: 'error'; message: string }
   | { type: 'roundEnd'; guesserId: string; score: number }
