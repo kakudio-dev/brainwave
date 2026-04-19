@@ -19,6 +19,11 @@ export const errorMessage = writable<string | null>(null);
 // Round end event
 export const roundEndEvent = writable<{ guesserId: string; score: number } | null>(null);
 
+// Clock offset between server and client in ms. Positive means the server's
+// clock is ahead of the client's. Updated on every state broadcast.
+// Use `Date.now() + $serverClockOffset` to get the server's current time.
+export const serverClockOffset = writable<number>(0);
+
 // Derived stores
 export const currentPlayer = derived(
   [gameState, playerId],
@@ -75,4 +80,5 @@ export function resetStores() {
   connectionStatus.set('disconnected');
   errorMessage.set(null);
   roundEndEvent.set(null);
+  serverClockOffset.set(0);
 }

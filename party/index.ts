@@ -89,7 +89,10 @@ type ClientMessage =
   | { type: 'nextWord' }
   | { type: 'startNextRound' }
   | { type: 'skipTurn' }
-  | { type: 'playAgain' };
+  | { type: 'playAgain' }
+  // Explicit "I'm done" signal, distinct from a transient socket close.
+  // Clears the player slot for real and transfers host if applicable.
+  | { type: 'leave' };
 
 export default class BrainwaveServer implements Party.Server {
   state: GameState;
@@ -124,7 +127,8 @@ export default class BrainwaveServer implements Party.Server {
     this.sendToConnection(conn, {
       type: 'state',
       state: this.getPublicState(),
-      playerId: null
+      playerId: null,
+      serverNow: Date.now()
     });
   }
 
@@ -156,6 +160,9 @@ export default class BrainwaveServer implements Party.Server {
           break;
         case 'playAgain':
           this.handlePlayAgain(sender);
+          break;
+        case 'leave':
+          this.handleExplicitLeave(sender);
           break;
       }
     } catch (e) {
@@ -238,28 +245,55 @@ export default class BrainwaveServer implements Party.Server {
     const mainPlayer = this.state.players.find(p => p.id === playerId);
     const pending = this.nextGamePlayers.find(p => p.id === playerId);
 
-    if (this.state.status === 'lobby') {
-      // Lobby phase: fully remove so the host can start without waiting on ghosts.
-      if (mainPlayer) this.removeFromMain(mainPlayer);
-      if (pending) this.removeFromPending(pending);
-      // If the room empties, reset.
-      if (this.state.players.length === 0 && this.room.getConnections().next().done) {
-        this.resetRoom();
-        return;
-      }
-      this.broadcastState();
-      if (pending) this.broadcastLobbyToNextGamePlayers();
-      return;
-    }
-
-    // Playing / finished: preserve turn order and scores; just mark offline.
+    // Uniform behavior across all phases: preserve the slot, host status, and
+    // turn order. Socket disconnects happen constantly in the wild (sleeping
+    // phones, flaky wifi, Cloudflare dropping idle WS) and silently shuffling
+    // the host on those is worse UX than waiting for a reconnect.
     if (!stillConnected) {
       if (mainPlayer) mainPlayer.connected = false;
       if (pending) pending.connected = false;
       // If every player has been offline AND no connections remain, reset the room.
-      if (this.state.players.every(p => !p.connected) && this.room.getConnections().next().done) {
+      if (
+        this.state.players.every(p => !p.connected) &&
+        this.room.getConnections().next().done
+      ) {
         this.resetRoom();
         return;
+      }
+    }
+
+    this.broadcastState();
+    if (pending) this.broadcastLobbyToNextGamePlayers();
+  }
+
+  private handleExplicitLeave(conn: Party.Connection) {
+    // The user clicked "Leave Game" (or equivalent). Unlike a transient
+    // socket close, this is a firm commitment to vacate — remove the slot,
+    // transfer host if applicable, and let the room carry on without them.
+    const playerId = this.connToPlayer.get(conn.id);
+    this.connToPlayer.delete(conn.id);
+    if (!playerId) return;
+
+    const mainPlayer = this.state.players.find(p => p.id === playerId);
+    const pending = this.nextGamePlayers.find(p => p.id === playerId);
+
+    if (mainPlayer) this.removeFromMain(mainPlayer);
+    if (pending) this.removeFromPending(pending);
+
+    // If the room empties entirely, reset it so a brand-new room doesn't
+    // inherit stale state.
+    if (this.state.players.length === 0) {
+      this.resetRoom();
+      return;
+    }
+
+    // Adjust turn indices if we removed someone who changed the turn order.
+    if (this.state.status === 'playing') {
+      if (this.state.currentGuesserIndex >= this.state.players.length) {
+        this.state.currentGuesserIndex = this.state.currentGuesserIndex % this.state.players.length;
+      }
+      if (this.state.nextGuesserIndex >= this.state.players.length) {
+        this.state.nextGuesserIndex = this.state.nextGuesserIndex % this.state.players.length;
       }
     }
 
@@ -641,12 +675,18 @@ export default class BrainwaveServer implements Party.Server {
   }
 
   private broadcastState() {
-    // Send state to all connections, stamping each with its own playerId (if joined).
+    // Send state to all connections, stamping each with its own playerId (if
+    // joined) and the server's current time. Clients use serverNow to sync
+    // their clock offset for accurate countdowns without relying on the
+    // local device's clock being right.
+    const serverNow = Date.now();
+    const state = this.getPublicState();
     for (const conn of this.room.getConnections()) {
       this.sendToConnection(conn, {
         type: 'state',
-        state: this.getPublicState(),
-        playerId: this.connToPlayer.get(conn.id) ?? null
+        state,
+        playerId: this.connToPlayer.get(conn.id) ?? null,
+        serverNow
       });
     }
   }
@@ -716,7 +756,8 @@ export default class BrainwaveServer implements Party.Server {
     this.sendToConnection(conn, {
       type: 'state',
       state: this.getLobbyState(),
-      playerId: this.connToPlayer.get(conn.id) ?? null
+      playerId: this.connToPlayer.get(conn.id) ?? null,
+      serverNow: Date.now()
     });
   }
 

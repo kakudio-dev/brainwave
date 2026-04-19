@@ -1,18 +1,22 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
+	import { serverClockOffset } from '$lib/stores/game';
 
 	interface Props {
 		// Wall-clock timestamp (ms, server epoch) when the round ends. null when
 		// no round is active. The server no longer ticks the timer once a second;
-		// it sends the deadline once and we compute the countdown locally.
+		// it sends the deadline once and we compute the countdown locally against
+		// the server's clock (Date.now() + offset) so phone clock drift doesn't
+		// leave "2 seconds left" on screen when the round actually just ended.
 		endsAt: number | null;
 	}
 
 	let { endsAt }: Props = $props();
 
-	function compute(now: number, deadline: number | null): number {
+	function compute(deadline: number | null): number {
 		if (deadline === null) return 0;
-		return Math.max(0, Math.ceil((deadline - now) / 1000));
+		const serverNow = Date.now() + $serverClockOffset;
+		return Math.max(0, Math.ceil((deadline - serverNow) / 1000));
 	}
 
 	// Seeded from the $effect below on mount and on every endsAt change.
@@ -23,7 +27,7 @@
 
 	$effect(() => {
 		// Recompute immediately whenever endsAt changes (start of round, end of round).
-		seconds = compute(Date.now(), endsAt);
+		seconds = compute(endsAt);
 
 		if (interval) {
 			clearInterval(interval);
@@ -31,7 +35,7 @@
 		}
 		if (endsAt !== null) {
 			interval = setInterval(() => {
-				seconds = compute(Date.now(), endsAt);
+				seconds = compute(endsAt);
 				if (seconds === 0 && interval) {
 					clearInterval(interval);
 					interval = null;

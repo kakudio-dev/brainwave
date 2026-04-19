@@ -171,7 +171,7 @@ describe('BrainwaveServer', () => {
 			expect(state?.state.players[1].isHost).toBe(false);
 		});
 
-		it('When host leaves, another player becomes host', () => {
+		it('A transient disconnect in the lobby preserves the host slot', () => {
 			const conn1 = createMockConnection('player1');
 			const conn2 = createMockConnection('player2');
 			addConnection(room, conn1);
@@ -182,7 +182,32 @@ describe('BrainwaveServer', () => {
 			joinAs(server, conn1, 'Alice');
 			joinAs(server, conn2, 'Bob');
 
-			// Host leaves
+			// Host's socket blips offline (phone sleep, wifi hiccup, Cloudflare
+			// recycling idle WS). Their seat should stay put; otherwise a brief
+			// network glitch silently demotes them when they reconnect.
+			room.connections.delete('player1');
+			server.onClose(conn1);
+
+			const state = getLastState(conn2);
+			expect(state?.state.players).toHaveLength(2);
+			const alice = state?.state.players.find(p => p.name === 'Alice');
+			expect(alice?.connected).toBe(false);
+			expect(alice?.isHost).toBe(true);
+		});
+
+		it('An explicit leave removes the host and promotes the next player', () => {
+			const conn1 = createMockConnection('player1');
+			const conn2 = createMockConnection('player2');
+			addConnection(room, conn1);
+			addConnection(room, conn2);
+			server.onConnect(conn1, {} as Party.ConnectionContext);
+			server.onConnect(conn2, {} as Party.ConnectionContext);
+
+			joinAs(server, conn1, 'Alice');
+			joinAs(server, conn2, 'Bob');
+
+			// Host explicitly clicks "Leave Game" before the socket closes.
+			sendMessage(server, conn1, { type: 'leave' });
 			room.connections.delete('player1');
 			server.onClose(conn1);
 
@@ -190,6 +215,18 @@ describe('BrainwaveServer', () => {
 			expect(state?.state.players).toHaveLength(1);
 			expect(state?.state.players[0].name).toBe('Bob');
 			expect(state?.state.players[0].isHost).toBe(true);
+		});
+
+		it('State broadcasts include serverNow for client clock sync', () => {
+			const conn = createMockConnection('player1');
+			addConnection(room, conn);
+			server.onConnect(conn, {} as Party.ConnectionContext);
+			joinAs(server, conn, 'Alice');
+
+			const last = conn.messages.filter((m: { type: string }) => m.type === 'state').at(-1) as
+				| { serverNow?: number }
+				| undefined;
+			expect(last?.serverNow).toBeTypeOf('number');
 		});
 
 		it('When a player leaves mid-game, the game continues', () => {

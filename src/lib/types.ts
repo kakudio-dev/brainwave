@@ -54,11 +54,12 @@ export type ClientMessage =
   | { type: 'nextWord' }
   | { type: 'startNextRound' }
   | { type: 'skipTurn' }
-  | { type: 'playAgain' };
+  | { type: 'playAgain' }
+  | { type: 'leave' };
 
 // Server -> Client messages
 export type ServerMessage =
-  | { type: 'state'; state: GameState; playerId: string | null }
+  | { type: 'state'; state: GameState; playerId: string | null; serverNow: number }
   | { type: 'word'; word: string }
   | { type: 'error'; message: string }
   | { type: 'roundEnd'; guesserId: string; score: number }

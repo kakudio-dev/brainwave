@@ -6,6 +6,7 @@ import {
   connectionStatus,
   errorMessage,
   roundEndEvent,
+  serverClockOffset,
   resetStores
 } from '$lib/stores/game';
 import type { ClientMessage, ServerMessage, GameState, Category } from '$lib/types';
@@ -107,6 +108,15 @@ export function connect(roomCode: string): Promise<void> {
 export function disconnect() {
   pendingJoin = null;
   if (socket) {
+    // Explicit exit: tell the server we're done so it can free our slot and
+    // transfer host if needed, rather than treating this as a transient blip.
+    if (socket.readyState === WebSocket.OPEN) {
+      try {
+        socket.send(JSON.stringify({ type: 'leave' } satisfies ClientMessage));
+      } catch {
+        /* ignore — we're closing anyway */
+      }
+    }
     socket.close();
     socket = null;
   }
@@ -118,6 +128,9 @@ function handleMessage(msg: ServerMessage) {
     case 'state':
       gameState.set(msg.state as GameState);
       if (msg.playerId) playerId.set(msg.playerId);
+      // Resync clock offset on every broadcast. Positive means the server
+      // is ahead of us; we add this to Date.now() to get the server's time.
+      serverClockOffset.set(msg.serverNow - Date.now());
       break;
 
     case 'word':
