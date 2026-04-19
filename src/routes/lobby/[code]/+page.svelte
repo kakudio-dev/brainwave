@@ -8,26 +8,19 @@
 	import PlayerList from '$lib/components/PlayerList.svelte';
 	import { authUser, refreshAuth } from '$lib/stores/auth';
 	import { myDecks, refreshMyDecks, fetchDeck } from '$lib/stores/decks';
-	import { validateDeckForm } from '$lib/deckForm';
 
 	type Mode =
 		| { kind: 'category'; category: Category }
 		| { kind: 'my-deck'; slug: string; name: string; words: string[] }
-		| { kind: 'code' }
-		| { kind: 'paste' };
+		| { kind: 'code' };
 
 	let mode = $state<Mode>({ kind: 'category', category: 'movies' });
 	let connecting = $state(true);
 
-	// "From code" state
+	// Deck code entry state
 	let codeInput = $state('');
 	let codeError = $state<string | null>(null);
 	let codeLoading = $state(false);
-
-	// "Paste custom" state
-	let pasteName = $state('');
-	let pasteText = $state('');
-	let pasteError = $state<string | null>(null);
 
 	const roomCode = page.params.code!;
 	const loggedIn = $derived(!!($authUser && typeof $authUser === 'object'));
@@ -89,17 +82,8 @@
 			startGame(mode.category);
 			return;
 		}
-		if (mode.kind === 'code' || mode.kind === 'paste') {
-			pasteError = null;
-			codeError = null;
-			if (mode.kind === 'paste') {
-				const v = validateDeckForm(pasteName, pasteText);
-				if (!v.ok) {
-					pasteError = v.error ?? 'Invalid deck';
-					return;
-				}
-				startGame('movies', { words: v.cleanedWords!, deckName: v.cleanedName! });
-			}
+		if (mode.kind === 'code') {
+			codeError = 'Load a deck with its code first.';
 			return;
 		}
 		if (mode.kind === 'my-deck') {
@@ -205,49 +189,28 @@
 					</div>
 
 					<div class="section mt-lg">
-						<h4 class="section-title">Have a share code?</h4>
+						<h4 class="section-title">Have a deck code?</h4>
 						{#if mode.kind === 'code'}
-							<div class="code-input-row">
-								<input
-									type="text"
-									class="form-input"
-									placeholder="e.g. GLIMMER7"
-									bind:value={codeInput}
-									maxlength="16"
-									autocapitalize="characters"
-								/>
-								<button class="btn btn--secondary" onclick={loadFromCode} disabled={codeLoading}>
-									{codeLoading ? '…' : 'Load'}
-								</button>
-							</div>
+							<input
+								type="text"
+								class="form-input code-input"
+								placeholder="e.g. GLIMMER7"
+								bind:value={codeInput}
+								maxlength="16"
+								autocapitalize="characters"
+								autocomplete="off"
+							/>
+							<button
+								class="btn btn--secondary code-load-btn mt-sm"
+								onclick={loadFromCode}
+								disabled={codeLoading}
+							>
+								{codeLoading ? 'Loading…' : 'Load deck'}
+							</button>
 							{#if codeError}<p class="text-danger text-sm mt-sm">{codeError}</p>{/if}
 						{:else}
 							<button class="pill pill--wide" onclick={() => (mode = { kind: 'code' })}>
-								Enter a share code
-							</button>
-						{/if}
-					</div>
-
-					<div class="section mt-lg">
-						<h4 class="section-title">Paste a custom deck</h4>
-						{#if mode.kind === 'paste'}
-							<input
-								type="text"
-								class="form-input mt-sm"
-								placeholder="Deck name"
-								bind:value={pasteName}
-								maxlength="60"
-							/>
-							<textarea
-								class="form-input mt-sm paste-area"
-								rows="8"
-								placeholder={`One word per line\nor comma-separated`}
-								bind:value={pasteText}
-							></textarea>
-							{#if pasteError}<p class="text-danger text-sm mt-sm">{pasteError}</p>{/if}
-						{:else}
-							<button class="pill pill--wide" onclick={() => (mode = { kind: 'paste' })}>
-								Paste a list
+								Enter a deck code
 							</button>
 						{/if}
 					</div>
@@ -268,10 +231,8 @@
 						Start: {mode.name}
 					{:else if mode.kind === 'category'}
 						Start: {CATEGORY_LABELS[mode.category]}
-					{:else if mode.kind === 'code'}
-						Load a deck above
 					{:else}
-						Start with custom deck
+						Load a deck above
 					{/if}
 				</button>
 			</div>
@@ -389,16 +350,6 @@
 		color: var(--text-secondary);
 	}
 
-	.code-input-row {
-		display: flex;
-		gap: var(--spacing-sm);
-	}
-
-	.code-input-row .form-input {
-		flex: 1;
-		text-transform: uppercase;
-	}
-
 	.form-input {
 		width: 100%;
 		padding: var(--spacing-md);
@@ -415,8 +366,16 @@
 		border-color: var(--color-primary);
 	}
 
-	.paste-area {
-		resize: vertical;
+	.code-input {
+		text-transform: uppercase;
+		letter-spacing: 0.1em;
+		font-family: monospace;
+		text-align: center;
+		font-size: var(--text-lg);
+	}
+
+	.code-load-btn {
+		width: 100%;
 	}
 
 	.start-btn {
