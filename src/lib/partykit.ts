@@ -10,8 +10,22 @@ import {
 } from '$lib/stores/game';
 import type { ClientMessage, ServerMessage, GameState, Category } from '$lib/types';
 
-// PartyKit host - override for prod via VITE_PARTYKIT_HOST env var
-const PARTYKIT_HOST = import.meta.env.VITE_PARTYKIT_HOST ?? 'localhost:1998';
+// PartyKit host. Resolved at runtime from the page's hostname so it
+// can't get out of sync with the build environment:
+//   - localhost / 127.0.0.1 → local PartyKit dev server on 1998
+//   - anywhere else         → the deployed party server
+// VITE_PARTYKIT_HOST remains as an escape hatch for non-standard setups.
+const PARTYKIT_HOST = resolvePartyKitHost();
+
+function resolvePartyKitHost(): string {
+  const fromEnv = import.meta.env.VITE_PARTYKIT_HOST as string | undefined;
+  if (fromEnv) return fromEnv;
+  if (typeof location !== 'undefined') {
+    const h = location.hostname;
+    if (h === 'localhost' || h === '127.0.0.1') return 'localhost:1998';
+  }
+  return 'brainwave.wbhumphrey.partykit.dev';
+}
 
 const PLAYER_ID_KEY = 'brainwave-player-id';
 
