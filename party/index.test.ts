@@ -76,7 +76,30 @@ async function fireAlarm(room: MockRoom, server: BrainwaveServer) {
 
 // --- Test Helpers ---
 
-function getLastState(conn: MockConnection): { state: { players: { id: string; name: string; isHost: boolean; score: number }[]; status: string; currentGuesserIndex: number; roundNumber: number; totalRounds: number; showingRoundSummary: boolean; wordRevealed: boolean; lastWordResult: string | null; roundWords: { word: string; result: string }[]; nextGuesserIndex: number }; playerId: string } | undefined {
+interface TestPlayer {
+	id: string;
+	name: string;
+	isHost: boolean;
+	score: number;
+	connected: boolean;
+	hadTurn: boolean;
+}
+
+interface TestState {
+	players: TestPlayer[];
+	status: string;
+	currentGuesserIndex: number;
+	roundNumber: number;
+	totalRounds: number;
+	showingRoundSummary: boolean;
+	wordRevealed: boolean;
+	lastWordResult: string | null;
+	roundWords: { word: string; result: string }[];
+	nextGuesserIndex: number;
+	roundEndsAt: number | null;
+}
+
+function getLastState(conn: MockConnection): { state: TestState; playerId: string } | undefined {
 	const stateMessages = conn.messages.filter((m: any) => m.type === 'state');
 	return stateMessages[stateMessages.length - 1] as any;
 }
@@ -132,7 +155,7 @@ describe('BrainwaveServer', () => {
 			expect(state?.state.status).toBe('lobby');
 		});
 
-		it('A late-joiner can enter a game in progress as a clue-giver', () => {
+		it('A late-joiner is appended to the roster and gets a turn at the end', () => {
 			// Setup: Two players join and start game
 			const conn1 = createMockConnection('player1');
 			const conn2 = createMockConnection('player2');
@@ -158,11 +181,49 @@ describe('BrainwaveServer', () => {
 
 			const afterState = getLastState(conn1);
 			expect(afterState?.state.players).toHaveLength(3);
-			// totalRounds stays at 2 — Charlie doesn't get a turn this game.
-			expect(afterState?.state.totalRounds).toBe(2);
-			const charlie = afterState?.state.players.find(p => p.name === 'Charlie');
+			// totalRounds grew to match the new player count so Charlie
+			// gets a turn after Alice and Bob finish theirs.
+			expect(afterState?.state.totalRounds).toBe(3);
+			expect(afterState?.state.players[2].name).toBe('Charlie');
+			const charlie = afterState?.state.players[2];
 			expect(charlie?.isHost).toBe(false);
 			expect(charlie?.connected).toBe(true);
+		});
+
+		it('The full rotation reaches a mid-game joiner', async () => {
+			const conn1 = createMockConnection('player1');
+			const conn2 = createMockConnection('player2');
+			addConnection(room, conn1);
+			addConnection(room, conn2);
+			server.onConnect(conn1, {} as Party.ConnectionContext);
+			server.onConnect(conn2, {} as Party.ConnectionContext);
+
+			joinAs(server, conn1, 'Alice');
+			joinAs(server, conn2, 'Bob');
+			sendMessage(server, conn1, { type: 'start', category: 'movies' });
+
+			// Charlie joins during Alice's turn
+			const conn3 = createMockConnection('player3');
+			addConnection(room, conn3);
+			server.onConnect(conn3, {} as Party.ConnectionContext);
+			joinAs(server, conn3, 'Charlie');
+
+			// Alice finishes her round
+			await fireAlarm(room, server);
+			sendMessage(server, conn2, { type: 'startNextRound' }); // Bob takes round 2
+
+			// Bob finishes
+			await fireAlarm(room, server);
+			// Summary shows, Charlie is the next guesser
+			const summary = getLastState(conn3);
+			expect(summary?.state.showingRoundSummary).toBe(true);
+			expect(summary?.state.nextGuesserIndex).toBe(2); // Charlie at index 2
+
+			// Charlie starts his turn
+			sendMessage(server, conn3, { type: 'startNextRound' });
+			const charlieTurn = getLastState(conn3);
+			expect(charlieTurn?.state.currentGuesserIndex).toBe(2);
+			expect(charlieTurn?.state.roundNumber).toBe(3);
 		});
 
 		it('First player to join becomes the host', () => {
@@ -492,17 +553,36 @@ describe('BrainwaveServer', () => {
 			expect(stateAfter?.state.roundNumber).toBe(2);
 		});
 
-		it('Next guesser can skip their turn', async () => {
-			await fireAlarm(room, server);
+		it('Next guesser can skip their turn (ends the game when no one is left)', async () => {
+			await fireAlarm(room, server); // Alice's round ends; she's marked done.
 
-			const stateBefore = getLastState(conn1);
-			expect(stateBefore?.state.roundNumber).toBe(1);
-
-			// Next guesser skips
+			// Bob is now the next guesser. When he skips, his turn is also done,
+			// which means every player has had a turn — the game ends cleanly.
 			sendMessage(server, conn2, { type: 'skipTurn' });
 
 			const stateAfter = getLastState(conn1);
-			expect(stateAfter?.state.roundNumber).toBe(2);
+			expect(stateAfter?.state.status).toBe('finished');
+		});
+
+		it('Skipping mid-rotation advances to the next un-taken player', async () => {
+			// Add a third player so there's someone left to pick up after a skip.
+			const conn3 = createMockConnection('player3');
+			addConnection(room, conn3);
+			server.onConnect(conn3, {} as Party.ConnectionContext);
+			joinAs(server, conn3, 'Charlie');
+
+			await fireAlarm(room, server); // Alice's round ends.
+
+			// Bob (nextGuesserIndex=1) skips. Charlie (idx 2) should be up next,
+			// still with the game in progress.
+			sendMessage(server, conn2, { type: 'skipTurn' });
+
+			const state = getLastState(conn1);
+			expect(state?.state.status).toBe('playing');
+			expect(state?.state.showingRoundSummary).toBe(true);
+			expect(state?.state.nextGuesserIndex).toBe(2);
+			expect(state?.state.players[1].hadTurn).toBe(true); // Bob: skipped
+			expect(state?.state.players[2].hadTurn).toBe(false); // Charlie: not yet
 		});
 
 		it('Starting a round sets a Durable Object alarm at the deadline', () => {

@@ -47,6 +47,9 @@ interface Player {
   isHost: boolean;
   score: number;
   connected: boolean;  // current WebSocket status
+  // True once this player has taken (or skipped) their guesser turn in the
+  // current game. The game ends when every player has had their turn.
+  hadTurn: boolean;
 }
 
 interface RoundWord {
@@ -212,20 +215,29 @@ export default class BrainwaveServer implements Party.Server {
       return;
     }
 
-    // Truly new player. Allowed at any phase — late-joiners get added to the
-    // roster but don't get their own turn this game (totalRounds was fixed at
-    // start time); they'll be clue-givers for the rest of the round and get a
-    // proper turn in the next game.
+    // Truly new player. Allowed at any phase — late-joiners get appended to
+    // the end of the roster, which naturally puts them at the back of the
+    // turn rotation. Their hadTurn starts false, so the game-end check
+    // (all players have had a turn) will wait for them.
     const player: Player = {
       id: playerId,
       name: name.trim().slice(0, 20),
       isHost: this.connectedPlayers().length === 0,
       score: 0,
-      connected: true
+      connected: true,
+      hadTurn: false
     };
 
     this.state.players.push(player);
     this.connToPlayer.set(conn.id, playerId);
+
+    // Keep totalRounds in sync with the roster so the UI's "Round N / M"
+    // label stays sensible. Only relevant mid-game; lobby/finished handle
+    // it on game start.
+    if (this.state.status === 'playing') {
+      this.state.totalRounds = this.state.players.length;
+    }
+
     this.broadcastState();
   }
 
@@ -392,7 +404,8 @@ export default class BrainwaveServer implements Party.Server {
     }
 
     // Promote the connected pool into the active game; drop disconnected stragglers.
-    this.state.players = connectedPool.map(p => ({ ...p, score: 0 }));
+    // Reset per-game state (score + hadTurn) so rematches start clean.
+    this.state.players = connectedPool.map(p => ({ ...p, score: 0, hadTurn: false }));
 
     // Always clear next game lobby when starting
     this.nextGamePlayers = [];
@@ -530,15 +543,10 @@ export default class BrainwaveServer implements Party.Server {
     const player = this.playerFor(conn);
     if (!nextGuesser || !player || player.id !== nextGuesser.id) return;
 
-    // Move to next guesser
+    // Move to next guesser. roundNumber is the display count of which round
+    // we're about to play — derived from how many turns are already done.
     this.state.currentGuesserIndex = this.state.nextGuesserIndex;
-    this.state.roundNumber++;
-
-    // Check if game is over
-    if (this.state.roundNumber > this.state.totalRounds) {
-      this.endGame();
-      return;
-    }
+    this.state.roundNumber = this.state.players.filter(p => p.hadTurn).length + 1;
 
     // Start new round
     this.startRound();
@@ -553,17 +561,18 @@ export default class BrainwaveServer implements Party.Server {
     const player = this.playerFor(conn);
     if (!nextGuesser || !player || player.id !== nextGuesser.id) return;
 
-    // Skipping counts as using a round
-    this.state.roundNumber++;
+    // Skipping = their turn is done without playing it.
+    nextGuesser.hadTurn = true;
 
-    // Check if all rounds are done (everyone played or skipped)
-    if (this.state.roundNumber > this.state.totalRounds) {
+    // If that was the last un-taken turn, the game ends.
+    const nextIdx = this.state.players.findIndex(p => !p.hadTurn);
+    if (nextIdx === -1) {
       this.endGame();
       return;
     }
 
-    // Advance to the next player
-    this.state.nextGuesserIndex = (this.state.nextGuesserIndex + 1) % this.state.players.length;
+    this.state.nextGuesserIndex = nextIdx;
+    this.state.roundNumber = this.state.players.filter(p => p.hadTurn).length + 1;
 
     this.broadcastState();
   }
@@ -586,7 +595,8 @@ export default class BrainwaveServer implements Party.Server {
       name: player.name,
       isHost: isFirstPlayer,
       score: 0,
-      connected: true
+      connected: true,
+      hadTurn: false
     });
 
     // Send rematch lobby state to this player
@@ -617,18 +627,25 @@ export default class BrainwaveServer implements Party.Server {
       this.state.roundWords.push({ word: this.state.currentWord, result: 'timeout' });
     }
 
-    // Calculate who is next
-    this.state.nextGuesserIndex = (this.state.currentGuesserIndex + 1) % this.state.players.length;
+    // Mark the current guesser's turn as used.
+    const currentGuesser = this.state.players[this.state.currentGuesserIndex];
+    if (currentGuesser) currentGuesser.hadTurn = true;
+
     this.state.showingRoundSummary = true;
     this.state.wordRevealed = false;
     this.state.currentWord = null;
     this.state.roundEndsAt = null;
 
-    // If that was the final round, end the game so rematch/rejoin isn't blocked
-    if (this.state.roundNumber >= this.state.totalRounds) {
+    // Find the next player who hasn't taken a turn. If none, the game is
+    // over. Using the hadTurn flag rather than a round counter means
+    // mid-game joiners, explicit leaves, and skips all fall out naturally
+    // without extra bookkeeping.
+    const nextIdx = this.state.players.findIndex(p => !p.hadTurn);
+    if (nextIdx === -1) {
       this.endGame();
       return;
     }
+    this.state.nextGuesserIndex = nextIdx;
 
     this.broadcastState();
   }
