@@ -132,7 +132,7 @@ describe('BrainwaveServer', () => {
 			expect(state?.state.status).toBe('lobby');
 		});
 
-		it('A player cannot join a game in progress', () => {
+		it('A late-joiner can enter a game in progress as a clue-giver', () => {
 			// Setup: Two players join and start game
 			const conn1 = createMockConnection('player1');
 			const conn2 = createMockConnection('player2');
@@ -145,14 +145,24 @@ describe('BrainwaveServer', () => {
 			joinAs(server, conn2, 'Bob');
 			sendMessage(server, conn1, { type: 'start', category: 'movies' });
 
-			// New player tries to join
+			const beforeState = getLastState(conn1);
+			expect(beforeState?.state.totalRounds).toBe(2);
+
+			// New player joins mid-game
 			const conn3 = createMockConnection('player3');
 			addConnection(room, conn3);
 			server.onConnect(conn3, {} as Party.ConnectionContext);
 			joinAs(server, conn3, 'Charlie');
 
-			const error = getLastError(conn3);
-			expect(error).toBe('Game already in progress');
+			expect(getLastError(conn3)).toBeUndefined();
+
+			const afterState = getLastState(conn1);
+			expect(afterState?.state.players).toHaveLength(3);
+			// totalRounds stays at 2 — Charlie doesn't get a turn this game.
+			expect(afterState?.state.totalRounds).toBe(2);
+			const charlie = afterState?.state.players.find(p => p.name === 'Charlie');
+			expect(charlie?.isHost).toBe(false);
+			expect(charlie?.connected).toBe(true);
 		});
 
 		it('First player to join becomes the host', () => {

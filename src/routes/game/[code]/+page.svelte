@@ -24,7 +24,7 @@
 		if ($connectionStatus !== 'connected') {
 			const playerName = sessionStorage.getItem('playerName');
 			if (!playerName) {
-				goto('/join');
+				goto(`/join/${roomCode}`);
 				return;
 			}
 			try {

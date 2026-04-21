@@ -212,15 +212,10 @@ export default class BrainwaveServer implements Party.Server {
       return;
     }
 
-    // Truly new player (not a reconnect)
-    if (this.state.status === 'playing') {
-      this.sendToConnection(conn, {
-        type: 'error',
-        message: 'Game already in progress'
-      });
-      return;
-    }
-
+    // Truly new player. Allowed at any phase — late-joiners get added to the
+    // roster but don't get their own turn this game (totalRounds was fixed at
+    // start time); they'll be clue-givers for the rest of the round and get a
+    // proper turn in the next game.
     const player: Player = {
       id: playerId,
       name: name.trim().slice(0, 20),

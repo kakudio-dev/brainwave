@@ -3,12 +3,12 @@
 	import { generateRoomCode } from '$lib/partykit';
 
 	let playerName = $state('');
-	let roomCode = $state(generateRoomCode());
 
 	function handleCreate() {
-		if (!playerName.trim()) return;
-		// Store name in sessionStorage for the lobby to pick up
-		sessionStorage.setItem('playerName', playerName.trim());
+		const name = playerName.trim();
+		if (!name) return;
+		const roomCode = generateRoomCode();
+		sessionStorage.setItem('playerName', name);
 		sessionStorage.setItem('isHost', 'true');
 		goto(`/lobby/${roomCode}`);
 	}
@@ -20,11 +20,17 @@
 	</button>
 
 	<h1 class="mt-lg">Create Game</h1>
-	<p class="text-secondary mb-xl">Share this code with your friends</p>
+	<p class="text-secondary mb-xl">
+		You'll get a code to share with your friends on the next screen.
+	</p>
 
-	<div class="room-code">{roomCode}</div>
-
-	<form class="mt-xl flex flex-col gap-md" onsubmit={(e) => { e.preventDefault(); handleCreate(); }}>
+	<form
+		class="flex flex-col gap-md"
+		onsubmit={(e) => {
+			e.preventDefault();
+			handleCreate();
+		}}
+	>
 		<input
 			type="text"
 			class="input"
@@ -34,11 +40,7 @@
 			autocomplete="off"
 		/>
 
-		<button
-			type="submit"
-			class="btn btn--primary"
-			disabled={!playerName.trim()}
-		>
+		<button type="submit" class="btn btn--primary" disabled={!playerName.trim()}>
 			Create Room
 		</button>
 	</form>

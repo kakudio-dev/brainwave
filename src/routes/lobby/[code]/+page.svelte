@@ -29,7 +29,10 @@
 		if ($connectionStatus !== 'connected') {
 			const playerName = sessionStorage.getItem('playerName');
 			if (!playerName) {
-				goto('/join');
+				// No name yet — send them through the URL-based join form that
+				// already knows the room code. After they enter their name,
+				// they'll land back here.
+				goto(`/join/${roomCode}`);
 				return;
 			}
 			try {
@@ -101,8 +104,19 @@
 		}
 	}
 
-	function copyCode() {
-		navigator.clipboard.writeText(roomCode);
+	let copied = $state(false);
+	async function copyJoinLink() {
+		// Copy the full share URL, which is much more useful to paste into a
+		// text than the bare 4-letter code.
+		const url = `${location.origin}/join/${roomCode}`;
+		try {
+			await navigator.clipboard.writeText(url);
+		} catch {
+			// Fallback: at worst, copy the code so something useful lands on the clipboard.
+			try { await navigator.clipboard.writeText(roomCode); } catch { /* ignore */ }
+		}
+		copied = true;
+		setTimeout(() => (copied = false), 1500);
 	}
 
 	function isSelectedCategory(c: Category) {
@@ -120,10 +134,12 @@
 
 	<h1 class="mt-lg">Lobby</h1>
 
-	<button class="room-code mt-md" onclick={copyCode} title="Click to copy">
+	<button class="room-code mt-md" onclick={copyJoinLink} title="Click to copy share link">
 		{roomCode}
 	</button>
-	<p class="text-muted text-sm mt-sm">Tap code to copy</p>
+	<p class="text-muted text-sm mt-sm">
+		{copied ? '✓ Link copied' : 'Tap to copy share link'}
+	</p>
 
 	{#if connecting || $connectionStatus === 'connecting'}
 		<div class="status mt-xl">
