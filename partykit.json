@@ -1,5 +1,8 @@
 {
   "name": "brainwave",
   "main": "party/index.ts",
-  "compatibilityDate": "2024-01-01"
+  "compatibilityDate": "2024-01-01",
+  "vars": {
+    "BRAINWAVE_API_BASE": "https://brainwave-99f.pages.dev"
+  }
 }

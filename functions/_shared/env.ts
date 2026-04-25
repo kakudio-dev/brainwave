@@ -17,4 +17,10 @@ export interface Env {
   // Example: "https://brainwave.pages.dev". If unset we derive it
   // from the incoming request's origin.
   APP_URL?: string;
+
+  // Shared secret used to authenticate game-event POSTs from the
+  // PartyKit server. The same value lives in PartyKit's environment.
+  // Bot deterrence rather than a security boundary — keeps random
+  // visitors from polluting the games table by hitting /api/games/log.
+  GAME_LOG_SECRET?: string;
 }

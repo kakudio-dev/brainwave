@@ -21,8 +21,9 @@
 		"db:migrate": "wrangler d1 migrations apply brainwave --remote",
 		"db:migrate:local": "wrangler d1 migrations apply brainwave --local",
 		"db:console": "wrangler d1 execute brainwave --remote --command",
-		"secret:resend": "wrangler pages secret put RESEND_API_KEY --project-name=brainwave-99f",
-		"secret:resend-from": "wrangler pages secret put RESEND_FROM --project-name=brainwave-99f"
+		"secret:resend": "wrangler pages secret put RESEND_API_KEY --project-name=brainwave",
+		"secret:resend-from": "wrangler pages secret put RESEND_FROM --project-name=brainwave",
+		"secret:game-log": "wrangler pages secret put GAME_LOG_SECRET --project-name=brainwave"
 	},
 	"devDependencies": {
 		"@cloudflare/workers-types": "^4.20260418.1",

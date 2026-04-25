@@ -102,6 +102,9 @@ export default class BrainwaveServer implements Party.Server {
   nextGamePlayers: Player[] = []; // Players waiting in lobby for next game
   // conn.id -> player.id (stable UUID). Populated on join, cleared on disconnect.
   connToPlayer = new Map<string, string>();
+  // Server-only id for the active game's telemetry row. Set when the game
+  // is logged as started; cleared when ended.
+  currentGameLogId: string | null = null;
 
   constructor(readonly room: Party.Room) {
     this.state = {
@@ -419,6 +422,18 @@ export default class BrainwaveServer implements Party.Server {
     this.state.roundNumber = 1;
     this.state.totalRounds = this.state.players.length;
 
+    // Telemetry: log this game's start. Fire-and-forget; failures don't
+    // affect gameplay.
+    this.currentGameLogId = crypto.randomUUID();
+    this.logGameEvent({
+      event: 'start',
+      id: this.currentGameLogId,
+      roomCode: this.state.code,
+      playerCount: this.state.players.length,
+      categoryLabel: label,
+      isCustomDeck: !!(customWords && customWords.length > 0)
+    });
+
     // Start first round
     this.startRound();
   }
@@ -656,6 +671,16 @@ export default class BrainwaveServer implements Party.Server {
     this.state.currentWord = null;
     this.state.roundEndsAt = null;
 
+    // Telemetry: close out the games row. Fire-and-forget.
+    if (this.currentGameLogId) {
+      this.logGameEvent({
+        event: 'end',
+        id: this.currentGameLogId,
+        totalTurns: this.state.players.filter(p => p.hadTurn).length
+      });
+      this.currentGameLogId = null;
+    }
+
     // Broadcast game end with final scores
     this.room.broadcast(JSON.stringify({
       type: 'gameEnd',
@@ -663,6 +688,32 @@ export default class BrainwaveServer implements Party.Server {
     }));
 
     this.broadcastState();
+  }
+
+  /**
+   * Fire-and-forget POST to the Pages Functions game-log endpoint.
+   * Authenticated by a shared secret. Failures are swallowed so a flaky
+   * telemetry hop never affects gameplay.
+   */
+  private logGameEvent(payload: Record<string, unknown>): void {
+    const env = this.room.env ?? {};
+    const apiBase = env.BRAINWAVE_API_BASE as string | undefined;
+    const secret = env.GAME_LOG_SECRET as string | undefined;
+    if (!apiBase || !secret) return;
+
+    const url = `${apiBase}/api/games/log`;
+    void fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${secret}`
+      },
+      body: JSON.stringify(payload)
+    })
+      .then(res => {
+        if (!res.ok) console.error(`game log ${payload.event} failed: ${res.status}`);
+      })
+      .catch(err => console.error('game log request error', err));
   }
 
   private getPublicState() {

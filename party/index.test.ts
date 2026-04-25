@@ -38,6 +38,7 @@ interface MockRoom {
 	connections: Map<string, MockConnection & Party.Connection>;
 	broadcasts: unknown[];
 	storage: MockStorage;
+	env: Record<string, unknown>;
 	getConnections: () => IterableIterator<Party.Connection>;
 	broadcast: (data: string) => void;
 }
@@ -54,6 +55,7 @@ function createMockRoom(id = 'TEST'): MockRoom & Party.Room {
 		connections: new Map(),
 		broadcasts: [],
 		storage,
+		env: {}, // empty so logGameEvent is a no-op in tests
 		getConnections() {
 			return this.connections.values();
 		},
